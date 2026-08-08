@@ -1,38 +1,32 @@
 name: Build and Release EXE
 
-# Запускать вручную из вкладки Actions
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # Запуск вручную из вкладки Actions
 
 jobs:
   build:
-    # Сборку будем делать на Windows, так как PyInstaller не умеет кроссплатформенно собирать .exe[reference:2]
     runs-on: windows-latest
 
     steps:
-    # 1. Загружаем ваш код из репозитория
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # 2. Устанавливаем Python
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11' # Можно указать вашу версию
+        python-version: '3.11'
 
-    # 3. Устанавливаем зависимости из вашего requirements.txt
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+        pip install pyinstaller   # <-- явно ставим PyInstaller
 
-    # 4. Собираем .exe файл с помощью PyInstaller
-    #    Флаги: --onefile (один файл), --noconsole (без окна), --icon (иконка)
-    - name: Build with PyInstaller
+    - name: Build EXE
       run: |
-        pyinstaller --onefile --noconsole --icon=icon.ico toggle_modes.py
+        # Используем python -m PyInstaller, чтобы гарантировать вызов
+        python -m PyInstaller --onefile --noconsole --icon=icon.ico toggle_modes.py
 
-    # 5. Загружаем готовый .exe как артефакт, чтобы его можно было скачать
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
