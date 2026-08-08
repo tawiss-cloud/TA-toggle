@@ -65,10 +65,6 @@ Settings are stored in
 monitor_settings.json
 ```
 
-## Screenshots
-
-[(Add screenshots here)](https://github.com/tawiss-cloud/TA-toggle/blob/main/screenshots/scr.png?raw=true)
-
 ## License
 
 MIT
