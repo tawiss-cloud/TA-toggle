@@ -1,69 +1,32 @@
 # TA toggle (Titan Army Monitor Switcher)
 
-Python utility for automatic switching of monitor settings for Titan Army monitors.
+Python-утилита для автоматического переключения настроек мониторов Titan Army.
 
-The program allows you to switch between Standard and Gaming monitor modes manually or automatically depending on whether a game or supported media player is running.
+Программа позволяет вручную или автоматически переключаться между стандартным и игровым режимами монитора в зависимости от того, запущена ли игра или поддерживаемый медиаплеер.
 
-## Features
+## Возможности
 
-- Automatic game detection
-- Automatic media player detection (MPC-HC, MPC-BE, VLC, PotPlayer)
-- HDR detection
-- Manual mode switching (Ctrl + Alt + Z)
-- System tray application
-- Custom brightness
-- Custom Local Dimming
-- Automatic return to Standard mode
-- HDR color preset support
+- Автоматическое обнаружение игр
+- Автоматическое обнаружение медиаплееров (MPC-HC, MPC-BE, VLC, PotPlayer)
+- Обнаружение HDR
+- Ручное переключение режимов (Ctrl + Alt + Z)
 
-## Requirements
-
-- Windows 10 / Windows 11
-- Python 3.10+
-- Monitor with DDC/CI enabled
-- Titan Army monitor (or compatible VCP commands)
-
-## Installation
-
-Clone the repository or download it as ZIP.
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Run:
-
-```bash
-python toggle_modes.py
-```
-
-## Controls
+## Управление
 
 ### Ctrl + Alt + Z
 
-- Switch monitor mode
-- If HDR is enabled, applies HDR color preset
+- Переключение режима монитора
 
-## Automatic switching
+## Автоматическое переключение
 
-When enabled the application monitors running windows.
+При включённом автоматическом режиме приложение отслеживает запущенные окна.
 
-It switches to Gaming mode when:
+Оно переключается в игровой режим, когда:
 
-- a fullscreen game is detected
-- supported media players are running fullscreen
+обнаружена игра, запущенная в полноэкранном режиме
+поддерживаемый медиаплеер запущен в полноэкранном режиме
 
-Returns to Standard mode when the application closes.
-
-## Configuration
-
-Settings are stored in
-
-```
-monitor_settings.json
-```
+После закрытия приложения программа возвращает монитор в стандартный режим.
 
 ## License
 
