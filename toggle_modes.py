@@ -13,7 +13,7 @@ import os
 import queue
 
 # ===================== НАСТРОЙКИ =====================
-DEBUG = False          # Включить отладочный вывод в консоль
+DEBUG = False   # Включим отладку для диагностики
 
 # ===================== WINAPI =====================
 user32 = ctypes.windll.user32
@@ -21,9 +21,21 @@ kernel32 = ctypes.windll.kernel32
 psapi = ctypes.windll.psapi
 
 HOTKEY_ID = 1
-MOD_CONTROL = 0x0002
 MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
 VK_Z = 0x5A
+
+DEFAULT_HOTKEY_MOD = MOD_CONTROL | MOD_ALT
+DEFAULT_HOTKEY_VK = VK_Z
+HOTKEY_MODIFIERS = DEFAULT_HOTKEY_MOD
+HOTKEY_VK = DEFAULT_HOTKEY_VK
+
+WM_APP = 0x8000
+WM_UPDATE_HOTKEY = WM_APP + 1
+pending_hotkey_mod = HOTKEY_MODIFIERS
+pending_hotkey_vk = HOTKEY_VK
 
 WS_CAPTION = 0x00C00000
 WS_THICKFRAME = 0x00040000
@@ -42,18 +54,20 @@ class MONITORINFO(ctypes.Structure):
                 ("rcWork", RECT),
                 ("dwFlags", ctypes.c_ulong)]
 
-# ===================== VCP =====================
 VCP_MODE_SWITCH = 0xE0
 VCP_LOCAL_DIMMING = 0x99
 VCP_LOCAL_DIMMING_ALT = 0x47
 VCP_BRIGHTNESS = 0x10
 VCP_COLOR_PRESET = 0x14
 
-# ===================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====================
 current_mode_index = 0
 last_switch_time = 0
 DELAY = 1
-manual_override = False  # Флаг ручного переключения
+
+# Ручной режим
+manual_override_active = False      # включён ли ручной режим
+manual_override_mode = 0            # какой режим установлен вручную (0 или 1)
+manual_override_waiting = False     # ожидаем появления игры (если ручной режим включён, а игра не запущена)
 
 DEFAULT_MODES = [
     {"name": "Стандартный", "local_dimming": 2, "brightness": 20},
@@ -82,13 +96,12 @@ hdr_settings = {
 }
 auto_switch_enabled = True
 media_players_enabled = True
-media_delay_seconds = 5
+media_delay_seconds = 2
 
 tk_queue = queue.Queue()
 active_connections = 0
 connections_lock = threading.Lock()
 
-# --- Отслеживание игр и медиа ---
 game_counter = 0
 GAME_THRESHOLD = 2
 game_window_hwnd = None
@@ -96,57 +109,82 @@ media_timer = None
 media_timer_lock = threading.Lock()
 last_reported_state = None
 
-# --- Кеш HDR статуса ---
 hdr_status_cache = None
 hdr_cache_time = 0
-HDR_CACHE_TIME = 2  # Кешируем на 2 секунды
+HDR_CACHE_TIME = 2
 hdr_cache_lock = threading.Lock()
 
-# --- Списки процессов ---
 MEDIA_PLAYER_PROCESSES = [
     "mpc-hc.exe", "mpc-be.exe", "mpc-hc64.exe", "mpc-be64.exe",
     "vlc.exe", "potplayer.exe", "kmplayer.exe", "mediaplayerclassic.exe"
 ]
 
-# ====== ЧЁРНЫЙ СПИСОК (ИСКЛЮЧЕНИЯ) ======
 EXCLUDED_PROCESSES = [
-    "wallpaper32.exe",      # Wallpaper Engine (32-bit)
-    "wallpaper64.exe",      # Wallpaper Engine (64-bit)
-    "chrome.exe",           # Google Chrome
-    "firefox.exe",          # Mozilla Firefox
-    "msedge.exe",           # Microsoft Edge
-    "brave.exe",            # Brave Browser
-    "opera.exe",            # Opera
-    "explorer.exe",         # Проводник Windows
+    "wallpaper32.exe", "wallpaper64.exe", "chrome.exe", "firefox.exe",
+    "msedge.exe", "brave.exe", "opera.exe", "explorer.exe"
 ]
 
-# ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====================
 def log(msg):
     if DEBUG:
         print(msg)
 
-# --- Загрузка/сохранение настроек ---
+def get_key_name(vk_code):
+    try:
+        scan_code = user32.MapVirtualKeyW(vk_code, 0)
+        lparam = (scan_code & 0xFF) << 16
+        buffer = ctypes.create_unicode_buffer(64)
+        result = user32.GetKeyNameTextW(lparam, buffer, 64)
+        if result > 0 and buffer.value:
+            return buffer.value
+    except Exception as e:
+        log(f"Ошибка получения имени клавиши: {e}")
+    return f"VK_{vk_code:02X}"
+
+def hotkey_to_string(mod, vk):
+    parts = []
+    if mod & MOD_CONTROL:
+        parts.append("Ctrl")
+    if mod & MOD_ALT:
+        parts.append("Alt")
+    if mod & MOD_SHIFT:
+        parts.append("Shift")
+    parts.append(get_key_name(vk))
+    return "+".join(parts)
+
+def request_hotkey_update(new_mod, new_vk):
+    global pending_hotkey_mod, pending_hotkey_vk
+    pending_hotkey_mod = new_mod
+    pending_hotkey_vk = new_vk
+    if hotkey_thread_id:
+        try:
+            user32.PostThreadMessageW(hotkey_thread_id, WM_UPDATE_HOTKEY, 0, 0)
+        except Exception as e:
+            log(f"Ошибка отправки сообщения об обновлении горячей клавиши: {e}")
+
 def load_settings():
     global modes, hdr_settings, auto_switch_enabled, media_players_enabled, media_delay_seconds
+    global HOTKEY_MODIFIERS, HOTKEY_VK
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if 'modes' in data and isinstance(data['modes'], list) and len(data['modes']) == 2:
                     modes = data['modes']
-                    log("Настройки режимов загружены")
-                if 'hdr_settings' in data and isinstance(data['hdr_settings'], dict):
+                if 'hdr_settings' in data:
                     hdr_settings.update(data['hdr_settings'])
-                    log("Настройки HDR загружены")
                 if 'auto_switch_enabled' in data:
                     auto_switch_enabled = data['auto_switch_enabled']
-                    log(f"Авто-переключение: {'включено' if auto_switch_enabled else 'выключено'}")
                 if 'media_players_enabled' in data:
                     media_players_enabled = data['media_players_enabled']
-                    log(f"Учёт медиаплееров: {'включён' if media_players_enabled else 'выключен'}")
                 if 'media_delay_seconds' in data:
                     media_delay_seconds = data['media_delay_seconds']
-                    log(f"Задержка медиаплееров: {media_delay_seconds} сек")
+                if 'hotkey_modifiers' in data and 'hotkey_vk' in data:
+                    mod_val = data['hotkey_modifiers']
+                    vk_val = data['hotkey_vk']
+                    if isinstance(mod_val, int) and isinstance(vk_val, int) and not (mod_val & MOD_WIN):
+                        HOTKEY_MODIFIERS = mod_val
+                        HOTKEY_VK = vk_val
+                        log(f"Горячая клавиша загружена: {hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)}")
     except Exception as e:
         log(f"Ошибка загрузки: {e}")
 
@@ -157,7 +195,9 @@ def save_settings():
             'hdr_settings': hdr_settings,
             'auto_switch_enabled': auto_switch_enabled,
             'media_players_enabled': media_players_enabled,
-            'media_delay_seconds': media_delay_seconds
+            'media_delay_seconds': media_delay_seconds,
+            'hotkey_modifiers': HOTKEY_MODIFIERS,
+            'hotkey_vk': HOTKEY_VK
         }
         with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -167,7 +207,6 @@ def save_settings():
         log(f"Ошибка сохранения: {e}")
         return False
 
-# --- Безопасные операции с монитором ---
 def safe_monitor_operation(operation, monitor_idx=None):
     global active_connections
     monitors = get_monitors()
@@ -196,38 +235,22 @@ def safe_monitor_operation(operation, monitor_idx=None):
             monitor = None
 
 def is_hdr_enabled(force_refresh=False):
-    """
-    Проверяет HDR по яркости 100% с кешированием на 2 секунды.
-    force_refresh=True - принудительно обновить кеш
-    """
     global hdr_status_cache, hdr_cache_time
-    
     with hdr_cache_lock:
         now = time.time()
-        
-        # Если принудительное обновление или кеш устарел
         if force_refresh or hdr_status_cache is None or (now - hdr_cache_time) >= HDR_CACHE_TIME:
-            # Делаем реальный запрос
             def check_hdr(monitor):
                 try:
                     current_brightness, max_brightness = monitor.vcp.get_vcp_feature(VCP_BRIGHTNESS)
-                    if current_brightness == 100:
-                        return "hdr"
-                    else:
-                        return "ok"
+                    return "hdr" if current_brightness == 100 else "ok"
                 except Exception as e:
                     log(f"Ошибка чтения яркости: {e}")
                     return "error"
-            
             result = safe_monitor_operation(check_hdr)
-            
-            # Если результат None, считаем что HDR выключен
             if result is None:
                 result = "ok"
-            
             hdr_status_cache = result
             hdr_cache_time = now
-        
         return hdr_status_cache
 
 def show_notification(message):
@@ -330,7 +353,6 @@ def create_image():
                 outline=(0, 0, 0, 255), width=1)
     return img
 
-# --- Применение настроек с повторными попытками ---
 def set_local_dimming(monitor, value, retries=3):
     for attempt in range(retries):
         try:
@@ -354,7 +376,6 @@ def apply_mode_settings(mode_index):
     def set_mode(monitor):
         success_brightness = False
         success_dimming = False
-        # Яркость
         for attempt in range(3):
             try:
                 monitor.vcp.set_vcp_feature(VCP_BRIGHTNESS, mode["brightness"])
@@ -368,7 +389,6 @@ def apply_mode_settings(mode_index):
         if not success_brightness:
             log("Не удалось установить яркость после нескольких попыток")
         time.sleep(0.1)
-        # Локальное затемнение
         for attempt in range(3):
             try:
                 monitor.vcp.set_vcp_feature(VCP_LOCAL_DIMMING, mode["local_dimming"])
@@ -393,22 +413,40 @@ def apply_mode_settings(mode_index):
     success_dimming, success_brightness = result
     return (success_dimming or success_brightness), success_dimming, success_brightness
 
+def retry_brightness_only(mode_index, attempts=5, delay=0.5):
+    mode = modes[mode_index]
+    for attempt in range(attempts):
+        time.sleep(delay)
+        if current_mode_index != mode_index:
+            log("Дожим яркости отменён: режим уже изменился")
+            return
+        def set_brightness(monitor):
+            try:
+                monitor.vcp.set_vcp_feature(VCP_BRIGHTNESS, mode["brightness"])
+                return True
+            except Exception as e:
+                log(f"Дожим яркости (попытка {attempt+1}/{attempts}): {e}")
+                return False
+        if safe_monitor_operation(set_brightness):
+            log(f"Яркость {mode['brightness']} дожата успешно (попытка {attempt+1}/{attempts})")
+            return
+    log("Не удалось дожать яркость после дополнительных попыток")
+
 def apply_mode_by_index(index, force_hdr_check=False):
     global current_mode_index, tray_icon
     if current_mode_index == index:
         return True
-    
-    # Проверка HDR перед переключением
     hdr_check = is_hdr_enabled(force_refresh=force_hdr_check)
     if hdr_check == "hdr":
         log("HDR включен – переключение режимов заблокировано")
         return False
-    
     for attempt in range(3):
         log(f"Попытка переключения на режим {index} (шаг {attempt+1}/3)")
-        apply_success, _, _ = apply_mode_settings(index)
+        apply_success, success_dimming, success_brightness = apply_mode_settings(index)
         if apply_success:
             current_mode_index = index
+            if not success_brightness:
+                threading.Thread(target=retry_brightness_only, args=(index,), daemon=True).start()
             if tray_icon:
                 try:
                     tray_icon.title = f"Режим {modes[current_mode_index]['name']}"
@@ -423,7 +461,6 @@ def apply_mode_by_index(index, force_hdr_check=False):
     log(f"Не удалось переключить на режим {index} после 3 попыток")
     return False
 
-# --- Определение процесса ---
 def get_process_name(hwnd):
     try:
         pid = ctypes.wintypes.DWORD()
@@ -446,80 +483,65 @@ def get_process_name(hwnd):
         return None
 
 def is_game_window(hwnd):
+    """Определяет, является ли окно игрой (полноэкранное или почти полноэкранное)."""
     if not hwnd:
         return False
-
     rect = RECT()
     if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         return False
-
     monitor = user32.MonitorFromWindow(hwnd, 2)
     if not monitor:
         return False
-
     mi = MONITORINFO()
     mi.cbSize = ctypes.sizeof(MONITORINFO)
     if not user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
         return False
-
     monitor_rect = mi.rcMonitor
     win_w = rect.right - rect.left
     win_h = rect.bottom - rect.top
     mon_w = monitor_rect.right - monitor_rect.left
     mon_h = monitor_rect.bottom - monitor_rect.top
-
     width_ratio = win_w / mon_w
     height_ratio = win_h / mon_h
-    covers_most = (width_ratio >= 0.95 and height_ratio >= 0.95)
-
+    # Снижаем порог до 90% для лучшего распознавания оконных игр
+    covers_most = (width_ratio >= 0.90 and height_ratio >= 0.90)
     style = user32.GetWindowLongW(hwnd, GWL_STYLE)
     if style == 0:
         return False
-
     has_caption = bool(style & WS_CAPTION)
     is_popup = bool(style & WS_POPUP)
-
     if not user32.IsWindowVisible(hwnd):
         return False
     if user32.IsIconic(hwnd):
         return False
-
     is_game = covers_most and (not has_caption or is_popup)
-
     process_name = get_process_name(hwnd)
     if process_name:
         if process_name.lower() in [p.lower() for p in EXCLUDED_PROCESSES]:
             log(f"Исключён процесс {process_name}")
             return False
-
     if not is_game and media_players_enabled:
         if process_name and process_name.lower() in [m.lower() for m in MEDIA_PLAYER_PROCESSES]:
             media_covers = (width_ratio >= 0.70 and height_ratio >= 0.70)
             if media_covers:
                 log(f"Медиаплеер {process_name} – игровой режим")
                 return True
-
     return is_game
 
-# --- Отложенное переключение для медиаплеера ---
 def delayed_media_switch(hwnd):
     global media_timer, game_window_hwnd, last_reported_state
     with media_timer_lock:
         media_timer = None
-    
     hdr_check = is_hdr_enabled()
     if hdr_check == "hdr":
         log("HDR включен – переключение медиаплеера отменено")
         return
-    
     if not user32.IsWindow(hwnd):
         log("Медиаплеер закрыт до срабатывания таймера – отмена")
         return
-    
     if not is_game_window(hwnd):
         log("Окно перестало быть медиаплеером за время задержки – отмена")
         return
-    
     if current_mode_index != 1:
         log(f"Медиаплеер подтверждён через {media_delay_seconds} сек – переключение на игровой режим")
         if apply_mode_by_index(1):
@@ -530,11 +552,10 @@ def delayed_media_switch(hwnd):
         game_window_hwnd = hwnd
         last_reported_state = True
 
-# --- Мониторинг (проверка каждую секунду) ---
 def monitor_loop():
     global current_mode_index, stop_hotkey_thread, game_counter, game_window_hwnd
     global auto_switch_enabled, media_timer, media_delay_seconds, last_reported_state
-    global manual_override
+    global manual_override_active, manual_override_mode, manual_override_waiting
 
     while not stop_hotkey_thread:
         try:
@@ -542,12 +563,68 @@ def monitor_loop():
                 time.sleep(1)
                 continue
 
-            # Если включён ручной режим - пропускаем все авто-переключения
-            if manual_override:
+            hwnd = user32.GetForegroundWindow()
+
+            # Обработка ручного режима
+            if manual_override_active:
+                log(f"[Ручной режим] Активен, waiting={manual_override_waiting}, game_hwnd={hex(game_window_hwnd) if game_window_hwnd else None}")
+
+                # Если мы ждём появления игры и есть активное окно
+                if manual_override_waiting and hwnd is not None:
+                    # Попробуем распознать игру через упрощённую проверку
+                    rect = RECT()
+                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                        monitor = user32.MonitorFromWindow(hwnd, 2)
+                        if monitor:
+                            mi = MONITORINFO()
+                            mi.cbSize = ctypes.sizeof(MONITORINFO)
+                            if user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
+                                mon_w = mi.rcMonitor.right - mi.rcMonitor.left
+                                mon_h = mi.rcMonitor.bottom - mi.rcMonitor.top
+                                win_w = rect.right - rect.left
+                                win_h = rect.bottom - rect.top
+                                if win_w / mon_w >= 0.90 and win_h / mon_h >= 0.90:
+                                    game_window_hwnd = hwnd
+                                    manual_override_waiting = False
+                                    log(f"[Ручной режим] Обнаружено большое окно {hex(hwnd)}, считаем игрой")
+                    # Если не удалось через упрощённую проверку, пробуем стандартную
+                    if manual_override_waiting and is_game_window(hwnd):
+                        game_window_hwnd = hwnd
+                        manual_override_waiting = False
+                        log(f"[Ручной режим] Обнаружена игра {hex(hwnd)} через is_game_window")
+
+                # Если есть запомненное окно игры, проверяем, не закрылось ли оно и всё ли ещё является игрой
+                if game_window_hwnd is not None:
+                    if not user32.IsWindow(game_window_hwnd):
+                        log(f"[Ручной режим] Окно {hex(game_window_hwnd)} больше не существует – сброс ручного режима")
+                        manual_override_active = False
+                        manual_override_waiting = False
+                        game_window_hwnd = None
+                        last_reported_state = None
+                        game_counter = 0
+                        if current_mode_index != 0:
+                            apply_mode_by_index(0)
+                        time.sleep(1)
+                        continue
+                    else:
+                        # Проверяем, является ли окно всё ещё игровым
+                        if not is_game_window(game_window_hwnd):
+                            log(f"[Ручной режим] Окно {hex(game_window_hwnd)} существует, но больше не является игрой – сброс ручного режима")
+                            manual_override_active = False
+                            manual_override_waiting = False
+                            game_window_hwnd = None
+                            last_reported_state = None
+                            game_counter = 0
+                            if current_mode_index != 0:
+                                apply_mode_by_index(0)
+                            time.sleep(1)
+                            continue
+
+                # Пропускаем любые авто-переключения в ручном режиме
                 time.sleep(1)
                 continue
 
-            hwnd = user32.GetForegroundWindow()
+            # Стандартная логика (ручной режим выключен)
             is_game = False
             is_media = False
             if hwnd:
@@ -593,13 +670,13 @@ def monitor_loop():
 
                 if game_window_hwnd is not None:
                     if not user32.IsWindow(game_window_hwnd):
-                        log("Игра/медиаплеер закрыта (окно уничтожено) – возврат стандартного режима")
+                        log("Игра закрыта (окно уничтожено) – возврат стандартного режима")
                         if apply_mode_by_index(0):
                             game_window_hwnd = None
                             last_reported_state = False
                     else:
                         if last_reported_state != True:
-                            log("Игра/медиаплеер уже запущена (свёрнута) – переключаем на игровой")
+                            log("Игра уже запущена (свёрнута) – переключаем на игровой")
                             if apply_mode_by_index(1):
                                 last_reported_state = True
                 else:
@@ -614,12 +691,12 @@ def monitor_loop():
         except Exception as e:
             log(f"Ошибка в мониторинге: {e}")
 
-        time.sleep(1)  # Проверка каждую секунду
+        time.sleep(1)
 
-# --- Ручное переключение ---
 def toggle_mode(icon=None):
     global current_mode_index, last_switch_time, last_reported_state
-    global manual_override
+    global manual_override_active, manual_override_mode, manual_override_waiting
+    global game_window_hwnd, game_counter
     
     now = time.time()
     if now - last_switch_time < DELAY:
@@ -629,7 +706,6 @@ def toggle_mode(icon=None):
         log("\n" + "="*50)
         log("Начало переключения режима")
         
-        # При ручном переключении принудительно обновляем HDR кеш
         hdr_check_result = is_hdr_enabled(force_refresh=True)
         if hdr_check_result == "error":
             log("Ошибка проверки HDR")
@@ -647,24 +723,30 @@ def toggle_mode(icon=None):
         sync_current_mode()
         new_mode_index = 1 - current_mode_index
         
-        # При ручном переключении принудительно обновляем HDR кеш
+        # Применяем переключение
         if apply_mode_by_index(new_mode_index, force_hdr_check=True):
             last_switch_time = now
             mode_name = modes[current_mode_index]["name"]
             
-            # Переключаем ручной режим: если он был включён, выключаем, иначе включаем
-            if manual_override:
-                manual_override = False
-                log("Ручной режим отключён")
-            else:
-                manual_override = True
-                log("Ручной режим включён")
+            # Логика ручного режима:
+            # При любом ручном переключении мы включаем ручной режим.
+            manual_override_active = True
+            manual_override_mode = current_mode_index
+            log(f"Ручной режим включён, целевой режим: {modes[current_mode_index]['name']}")
             
-            # Синхронизация состояния при ручном переключении
-            if current_mode_index == 1:
-                last_reported_state = True
+            # Запоминаем активное окно игры, если оно есть
+            active_hwnd = user32.GetForegroundWindow()
+            if active_hwnd and is_game_window(active_hwnd):
+                game_window_hwnd = active_hwnd
+                manual_override_waiting = False
+                log(f"Запомнено окно игры {hex(active_hwnd)} для ручного режима")
             else:
-                last_reported_state = False
+                # Если игра не запущена, устанавливаем флаг ожидания
+                game_window_hwnd = None
+                manual_override_waiting = True
+                log("Ручной режим включён, игра не запущена – ожидаем появления игры")
+            
+            last_reported_state = (current_mode_index == 1)
             
             show_notification(f"Режим: {mode_name}")
             if icon:
@@ -683,11 +765,15 @@ def get_local_dimming_name(value):
             return option["name"]
     return "Неизвестно"
 
-# ===================== ИНТЕРФЕЙС =====================
 def create_settings_window():
     def create_window():
+        new_hotkey_mod = HOTKEY_MODIFIERS
+        new_hotkey_vk = HOTKEY_VK
+        recording_modifiers = set()
+
         def save_all_settings():
             nonlocal auto_switch_var, media_players_var, media_delay_var
+            nonlocal new_hotkey_mod, new_hotkey_vk
             try:
                 standard_brightness = int(standard_brightness_entry.get())
                 if not (0 <= standard_brightness <= 100):
@@ -705,7 +791,6 @@ def create_settings_window():
                 preset_number = int(preset_entry.get())
                 if not (0 <= preset_number <= 255):
                     raise ValueError("Номер пресета должен быть от 0 до 255")
-                
                 try:
                     delay_val = int(media_delay_var.get())
                     if delay_val < 1:
@@ -727,6 +812,12 @@ def create_settings_window():
                 modes[1]["local_dimming"] = gaming_dimming
                 hdr_settings["auto_set_preset"] = auto_set_preset
                 hdr_settings["preset_number"] = preset_number
+
+                global HOTKEY_MODIFIERS, HOTKEY_VK
+                hotkey_changed = (new_hotkey_mod != HOTKEY_MODIFIERS) or (new_hotkey_vk != HOTKEY_VK)
+                if hotkey_changed:
+                    HOTKEY_MODIFIERS, HOTKEY_VK = new_hotkey_mod, new_hotkey_vk
+                    request_hotkey_update(new_hotkey_mod, new_hotkey_vk)
 
                 if save_settings():
                     show_notification("Настройки сохранены")
@@ -784,11 +875,15 @@ def create_settings_window():
 
         window = tk.Toplevel()
         window.title("Настройки")
-        window.geometry("550x750")
-        window.resizable(False, False)
+        win_width = 600
+        win_height = 920
         window.update_idletasks()
-        x = (window.winfo_screenwidth() - 550) // 2
-        y = (window.winfo_screenheight() - 750) // 2
+        max_height = window.winfo_screenheight() - 80
+        win_height = min(win_height, max_height)
+        window.geometry(f"{win_width}x{win_height}")
+        window.resizable(False, False)
+        x = (window.winfo_screenwidth() - win_width) // 2
+        y = (window.winfo_screenheight() - win_height) // 2
         window.geometry(f"+{x}+{y}")
 
         canvas = tk.Canvas(window)
@@ -882,14 +977,83 @@ def create_settings_window():
         hdr_frame = ttk.LabelFrame(main_frame, text="Настройки HDR", padding="10")
         hdr_frame.pack(fill=tk.X, pady=(0, 15))
         auto_set_var = tk.BooleanVar(value=hdr_settings["auto_set_preset"])
-        auto_set_check = ttk.Checkbutton(hdr_frame,
-                                         text="Устанавливать цветовой пресет при нажатии Ctrl+Alt+Z (если HDR включен)",
-                                         variable=auto_set_var)
+        auto_set_check = ttk.Checkbutton(
+            hdr_frame,
+            text="Устанавливать цветовой пресет при нажатии горячей клавиши (если HDR включен)",
+            variable=auto_set_var)
         auto_set_check.pack(anchor=tk.W, pady=(0, 10))
         ttk.Label(hdr_frame, text="Номер цветового пресета (0-255):").pack(anchor=tk.W, pady=(0, 5))
         preset_entry = ttk.Entry(hdr_frame, width=20)
         preset_entry.insert(0, str(hdr_settings["preset_number"]))
         preset_entry.pack(anchor=tk.W)
+
+        hotkey_frame = ttk.LabelFrame(main_frame, text="Горячая клавиша переключения режима", padding="10")
+        hotkey_frame.configure(takefocus=1)
+        hotkey_frame.pack(fill=tk.X, pady=(0, 15))
+
+        hotkey_display_var = tk.StringVar(value=hotkey_to_string(new_hotkey_mod, new_hotkey_vk))
+        hotkey_value_label = ttk.Label(hotkey_frame, textvariable=hotkey_display_var, font=('Arial', 10, 'bold'))
+        hotkey_value_label.pack(anchor=tk.W, pady=(0, 8))
+
+        def finish_recording():
+            hotkey_frame.unbind("<KeyPress>")
+            hotkey_frame.unbind("<FocusOut>")
+            record_button.config(text="Записать новую комбинацию")
+
+        def on_hotkey_key_press(event):
+            nonlocal new_hotkey_mod, new_hotkey_vk
+            keysym = event.keysym
+
+            if keysym in ("Super_L", "Super_R", "Win_L", "Win_R") or "Win" in keysym:
+                hotkey_display_var.set("Клавиша Win запрещена — попробуйте ещё раз")
+                recording_modifiers.clear()
+                return "break"
+
+            if keysym in ("Control_L", "Control_R"):
+                recording_modifiers.add("ctrl")
+            elif keysym in ("Alt_L", "Alt_R"):
+                recording_modifiers.add("alt")
+            elif keysym in ("Shift_L", "Shift_R"):
+                recording_modifiers.add("shift")
+            else:
+                if not recording_modifiers:
+                    hotkey_display_var.set("Добавьте Ctrl/Alt/Shift и обычную клавишу")
+                    return "break"
+                mod_flags = 0
+                if "ctrl" in recording_modifiers:
+                    mod_flags |= MOD_CONTROL
+                if "alt" in recording_modifiers:
+                    mod_flags |= MOD_ALT
+                if "shift" in recording_modifiers:
+                    mod_flags |= MOD_SHIFT
+                new_hotkey_mod = mod_flags
+                new_hotkey_vk = event.keycode
+                hotkey_display_var.set(hotkey_to_string(new_hotkey_mod, new_hotkey_vk))
+                recording_modifiers.clear()
+                finish_recording()
+            return "break"
+
+        def start_recording():
+            recording_modifiers.clear()
+            hotkey_display_var.set("Нажмите комбинацию клавиш (кроме Win)...")
+            record_button.config(text="Отмена записи")
+            hotkey_frame.focus_set()
+            hotkey_frame.bind("<KeyPress>", on_hotkey_key_press)
+            hotkey_frame.bind("<FocusOut>", lambda e: (finish_recording(),
+                               hotkey_display_var.set(hotkey_to_string(new_hotkey_mod, new_hotkey_vk))))
+
+        def on_record_button():
+            if record_button.cget("text") == "Отмена записи":
+                finish_recording()
+                hotkey_display_var.set(hotkey_to_string(new_hotkey_mod, new_hotkey_vk))
+            else:
+                start_recording()
+
+        record_button = ttk.Button(hotkey_frame, text="Записать новую комбинацию", command=on_record_button)
+        record_button.pack(anchor=tk.W)
+        ttk.Label(hotkey_frame,
+                  text="Любое сочетание клавиш (Ctrl/Alt/Shift + клавиша), кроме клавиши Win.",
+                  foreground="gray", wraplength=500).pack(anchor=tk.W, pady=(5, 0))
 
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(pady=10)
@@ -958,13 +1122,13 @@ def on_about(icon, item):
         title_label.pack(pady=10)
         hdr_status = "Включена" if hdr_settings["auto_set_preset"] else "Отключена"
         info_text = (
-            "Горячая клавиша: Ctrl+Alt+Z\n\n"
+            f"Горячая клавиша: {hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)}\n\n"
             "Текущие настройки (SDR):\n"
             f"• Стандартный: {get_local_dimming_name(modes[0]['local_dimming'])} ({modes[0]['local_dimming']}), яркость {modes[0]['brightness']}\n"
             f"• Игровой: {get_local_dimming_name(modes[1]['local_dimming'])} ({modes[1]['local_dimming']}), яркость {modes[1]['brightness']}\n\n"
             "Исключены из определения игр:\n"
             "Wallpaper Engine, Chrome, Firefox, Edge, Brave, Opera, Проводник\n\n"
-            "Версия: 3.8"
+            "Версия: 1.1 (v35) "
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
@@ -988,9 +1152,9 @@ def on_quit(icon, item):
     icon.stop()
 
 def hotkey_listener(icon):
-    global hotkey_thread_id, stop_hotkey_thread
+    global hotkey_thread_id, stop_hotkey_thread, HOTKEY_MODIFIERS, HOTKEY_VK
     hotkey_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
-    if not user32.RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_ALT, VK_Z):
+    if not user32.RegisterHotKey(None, HOTKEY_ID, HOTKEY_MODIFIERS, HOTKEY_VK):
         log("Не удалось зарегистрировать горячую клавишу")
         return
     try:
@@ -1007,6 +1171,20 @@ def hotkey_listener(icon):
                     set_hdr_color_preset()
                 else:
                     toggle_mode(icon)
+            elif msg.message == WM_UPDATE_HOTKEY:
+                previous_mod, previous_vk = HOTKEY_MODIFIERS, HOTKEY_VK
+                try:
+                    user32.UnregisterHotKey(None, HOTKEY_ID)
+                except Exception:
+                    pass
+                if user32.RegisterHotKey(None, HOTKEY_ID, pending_hotkey_mod, pending_hotkey_vk):
+                    HOTKEY_MODIFIERS, HOTKEY_VK = pending_hotkey_mod, pending_hotkey_vk
+                    log(f"Горячая клавиша обновлена: {hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)}")
+                    show_notification(f"Горячая клавиша: {hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)}")
+                else:
+                    log("Не удалось зарегистрировать новую горячую клавишу, возвращаем прежнюю")
+                    show_notification("❌ Не удалось зарегистрировать горячую клавишу")
+                    user32.RegisterHotKey(None, HOTKEY_ID, previous_mod, previous_vk)
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
     finally:
@@ -1030,7 +1208,6 @@ def start_tkinter():
     root.after(100, process_queue)
     root.mainloop()
 
-# ===================== ЗАПУСК =====================
 if __name__ == "__main__":
     load_settings()
     print("=== Запуск программы ===")
@@ -1041,6 +1218,7 @@ if __name__ == "__main__":
     print(f"Учёт медиаплееров: {'включён' if media_players_enabled else 'выключен'}")
     print(f"Задержка медиаплееров: {media_delay_seconds} сек")
     print(f"Режим отладки: {'ВКЛЮЧЁН' if DEBUG else 'ВЫКЛЮЧЕН'}")
+    print(f"Горячая клавиша: {hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)}")
 
     if not find_titan_army_monitor():
         monitor_index = 0
@@ -1071,5 +1249,5 @@ if __name__ == "__main__":
     else:
         print("Автоматическое переключение отключено")
     print("Исключены из определения игр: Wallpaper Engine, браузеры, Проводник")
-    print("Ручное переключение (Ctrl+Alt+Z) включает/выключает авто-режим")
+    print(f"Ручное переключение ({hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)}) включает/выключает авто-режим")
     tray_icon.run()
