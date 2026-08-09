@@ -1,57 +1,32 @@
-name: Build EXE and Create Release
+release:
+  needs: build
+  runs-on: ubuntu-latest
+  permissions:
+    contents: write
 
-# Разрешаем запуск вручную из вкладки Actions
-on:
-  workflow_dispatch:
-
-jobs:
-  # Первая задача – собрать .exe на Windows
-  build:
-    runs-on: windows-latest
-
-    steps:
+  steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
       with:
-        python-version: '3.11'
+        fetch-depth: 0
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pyinstaller   # <-- явно устанавливаем PyInstaller
-
-    - name: Build EXE
-      run: |
-        python -m PyInstaller --onefile --noconsole --icon=icon.ico toggle_modes.py
-
-    - name: Upload EXE as artifact (для временного хранения)
-      uses: actions/upload-artifact@v4
-      with:
-        name: TA-toggle-exe
-        path: dist/toggle_modes.exe
-
-  # Вторая задача – создать Release и прикрепить к нему .exe
-  release:
-    needs: build        # Эта задача запустится только после успешной сборки
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write   # Даём разрешение на создание релиза
-
-    steps:
     - name: Download built EXE
       uses: actions/download-artifact@v4
       with:
         name: TA-toggle-exe
 
+    - name: Bump minor version and create tag
+      id: tag_version
+      uses: anothrNick/github-tag-action@1.67.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        DEFAULT_BUMP: minor   # <-- ключевое изменение: увеличивается минор
+
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: toggle_modes.exe          # Файл, который попадёт в релиз
-        tag_name: v1.1.0                 # Можно менять вручную или сделать автоматическим
-        name: "TA-toggle v1.1.0"
+        files: toggle_modes.exe
+        tag_name: ${{ steps.tag_version.outputs.new_tag }}
+        name: "TA-toggle ${{ steps.tag_version.outputs.new_tag }}"
         draft: false
         prerelease: false
