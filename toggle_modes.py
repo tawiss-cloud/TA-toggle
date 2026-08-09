@@ -96,7 +96,7 @@ hdr_settings = {
 }
 auto_switch_enabled = True
 media_players_enabled = True
-media_delay_seconds = 2
+media_delay_seconds = 5
 
 tk_queue = queue.Queue()
 active_connections = 0
@@ -121,7 +121,8 @@ MEDIA_PLAYER_PROCESSES = [
 
 EXCLUDED_PROCESSES = [
     "wallpaper32.exe", "wallpaper64.exe", "chrome.exe", "firefox.exe",
-    "msedge.exe", "brave.exe", "opera.exe", "explorer.exe"
+    "msedge.exe", "brave.exe", "opera.exe", "explorer.exe",
+    "cmd.exe", "powershell.exe", "notepad.exe", "mspaint.exe"
 ]
 
 def log(msg):
@@ -483,7 +484,6 @@ def get_process_name(hwnd):
         return None
 
 def is_game_window(hwnd):
-    """Определяет, является ли окно игрой (полноэкранное или почти полноэкранное)."""
     if not hwnd:
         return False
     rect = RECT()
@@ -503,7 +503,6 @@ def is_game_window(hwnd):
     mon_h = monitor_rect.bottom - monitor_rect.top
     width_ratio = win_w / mon_w
     height_ratio = win_h / mon_h
-    # Снижаем порог до 90% для лучшего распознавания оконных игр
     covers_most = (width_ratio >= 0.90 and height_ratio >= 0.90)
     style = user32.GetWindowLongW(hwnd, GWL_STYLE)
     if style == 0:
@@ -571,27 +570,35 @@ def monitor_loop():
 
                 # Если мы ждём появления игры и есть активное окно
                 if manual_override_waiting and hwnd is not None:
-                    # Попробуем распознать игру через упрощённую проверку
-                    rect = RECT()
-                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                        monitor = user32.MonitorFromWindow(hwnd, 2)
-                        if monitor:
-                            mi = MONITORINFO()
-                            mi.cbSize = ctypes.sizeof(MONITORINFO)
-                            if user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
-                                mon_w = mi.rcMonitor.right - mi.rcMonitor.left
-                                mon_h = mi.rcMonitor.bottom - mi.rcMonitor.top
-                                win_w = rect.right - rect.left
-                                win_h = rect.bottom - rect.top
-                                if win_w / mon_w >= 0.90 and win_h / mon_h >= 0.90:
-                                    game_window_hwnd = hwnd
-                                    manual_override_waiting = False
-                                    log(f"[Ручной режим] Обнаружено большое окно {hex(hwnd)}, считаем игрой")
-                    # Если не удалось через упрощённую проверку, пробуем стандартную
-                    if manual_override_waiting and is_game_window(hwnd):
-                        game_window_hwnd = hwnd
-                        manual_override_waiting = False
-                        log(f"[Ручной режим] Обнаружена игра {hex(hwnd)} через is_game_window")
+                    # Получаем имя процесса для проверки исключений
+                    proc_name = get_process_name(hwnd)
+                    if proc_name and proc_name.lower() in [p.lower() for p in EXCLUDED_PROCESSES]:
+                        log(f"[Ручной режим] Окно {hex(hwnd)} исключено (процесс {proc_name})")
+                    else:
+                        # Проверяем размеры
+                        rect = RECT()
+                        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                            monitor = user32.MonitorFromWindow(hwnd, 2)
+                            if monitor:
+                                mi = MONITORINFO()
+                                mi.cbSize = ctypes.sizeof(MONITORINFO)
+                                if user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
+                                    mon_w = mi.rcMonitor.right - mi.rcMonitor.left
+                                    mon_h = mi.rcMonitor.bottom - mi.rcMonitor.top
+                                    win_w = rect.right - rect.left
+                                    win_h = rect.bottom - rect.top
+                                    if win_w / mon_w >= 0.90 and win_h / mon_h >= 0.90:
+                                        # Проверяем стиль окна
+                                        style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+                                        has_caption = bool(style & WS_CAPTION)
+                                        is_popup = bool(style & WS_POPUP)
+                                        # Если окно имеет рамку и не является popup – скорее всего не игра
+                                        if has_caption and not is_popup:
+                                            log(f"[Ручной режим] Большое окно {hex(hwnd)} имеет рамку, не считаем игрой")
+                                        else:
+                                            game_window_hwnd = hwnd
+                                            manual_override_waiting = False
+                                            log(f"[Ручной режим] Обнаружено большое окно {hex(hwnd)} (процесс {proc_name}), считаем игрой")
 
                 # Если есть запомненное окно игры, проверяем, не закрылось ли оно и всё ли ещё является игрой
                 if game_window_hwnd is not None:
@@ -607,18 +614,42 @@ def monitor_loop():
                         time.sleep(1)
                         continue
                     else:
-                        # Проверяем, является ли окно всё ещё игровым
+                        # Проверяем, является ли окно всё ещё игровым (используем is_game_window)
                         if not is_game_window(game_window_hwnd):
-                            log(f"[Ручной режим] Окно {hex(game_window_hwnd)} существует, но больше не является игрой – сброс ручного режима")
-                            manual_override_active = False
-                            manual_override_waiting = False
-                            game_window_hwnd = None
-                            last_reported_state = None
-                            game_counter = 0
-                            if current_mode_index != 0:
-                                apply_mode_by_index(0)
-                            time.sleep(1)
-                            continue
+                            # Дополнительно проверим, не стало ли окно маленьким или не изменился ли процесс
+                            rect = RECT()
+                            if user32.GetWindowRect(game_window_hwnd, ctypes.byref(rect)):
+                                monitor = user32.MonitorFromWindow(game_window_hwnd, 2)
+                                if monitor:
+                                    mi = MONITORINFO()
+                                    mi.cbSize = ctypes.sizeof(MONITORINFO)
+                                    if user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
+                                        mon_w = mi.rcMonitor.right - mi.rcMonitor.left
+                                        mon_h = mi.rcMonitor.bottom - mi.rcMonitor.top
+                                        win_w = rect.right - rect.left
+                                        win_h = rect.bottom - rect.top
+                                        if not (win_w / mon_w >= 0.90 and win_h / mon_h >= 0.90):
+                                            log(f"[Ручной режим] Окно {hex(game_window_hwnd)} больше не занимает 90% экрана – сброс")
+                                            manual_override_active = False
+                                            manual_override_waiting = False
+                                            game_window_hwnd = None
+                                            last_reported_state = None
+                                            game_counter = 0
+                                            if current_mode_index != 0:
+                                                apply_mode_by_index(0)
+                                            time.sleep(1)
+                                            continue
+                            if manual_override_active and is_game_window(game_window_hwnd) == False:
+                                log(f"[Ручной режим] Окно {hex(game_window_hwnd)} больше не является игрой – сброс")
+                                manual_override_active = False
+                                manual_override_waiting = False
+                                game_window_hwnd = None
+                                last_reported_state = None
+                                game_counter = 0
+                                if current_mode_index != 0:
+                                    apply_mode_by_index(0)
+                                time.sleep(1)
+                                continue
 
                 # Пропускаем любые авто-переключения в ручном режиме
                 time.sleep(1)
@@ -1127,8 +1158,9 @@ def on_about(icon, item):
             f"• Стандартный: {get_local_dimming_name(modes[0]['local_dimming'])} ({modes[0]['local_dimming']}), яркость {modes[0]['brightness']}\n"
             f"• Игровой: {get_local_dimming_name(modes[1]['local_dimming'])} ({modes[1]['local_dimming']}), яркость {modes[1]['brightness']}\n\n"
             "Исключены из определения игр:\n"
-            "Wallpaper Engine, Chrome, Firefox, Edge, Brave, Opera, Проводник\n\n"
-            "Версия: 1.1 (v35) "
+            "Wallpaper Engine, Chrome, Firefox, Edge, Brave, Opera, Проводник,\n"
+            "cmd, powershell, notepad, mspaint\n\n"
+            "Версия: 5.7 (улучшено распознавание ложных срабатываний)"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
@@ -1248,6 +1280,6 @@ if __name__ == "__main__":
             print("Учёт медиаплееров выключен")
     else:
         print("Автоматическое переключение отключено")
-    print("Исключены из определения игр: Wallpaper Engine, браузеры, Проводник")
+    print("Исключены из определения игр: Wallpaper Engine, браузеры, Проводник, консоль, блокнот и др.")
     print(f"Ручное переключение ({hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)}) включает/выключает авто-режим")
     tray_icon.run()
