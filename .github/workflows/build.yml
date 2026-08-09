@@ -51,7 +51,7 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: toggle_modes.exe          # Файл, который попадёт в релиз
-        tag_name: v1.0.0                 # Можно менять вручную или сделать автоматическим
-        name: "TA-toggle v1.0.0"
+        tag_name: v1.1.0                 # Можно менять вручную или сделать автоматическим
+        name: "TA-toggle v1.1.0"
         draft: false
         prerelease: false
