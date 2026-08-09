@@ -96,7 +96,7 @@ hdr_settings = {
 }
 auto_switch_enabled = True
 media_players_enabled = True
-media_delay_seconds = 5
+media_delay_seconds = 2
 
 tk_queue = queue.Queue()
 active_connections = 0
@@ -1160,7 +1160,7 @@ def on_about(icon, item):
             "Исключены из определения игр:\n"
             "Wallpaper Engine, Chrome, Firefox, Edge, Brave, Opera, Проводник,\n"
             "cmd, powershell, notepad, mspaint\n\n"
-            "Версия: 5.7 (улучшено распознавание ложных срабатываний)"
+            "Версия: 1.1 (v35)"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
