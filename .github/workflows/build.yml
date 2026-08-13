@@ -2,56 +2,68 @@ name: Build and Auto-Tag
 
 on:
   push:
-    branches: [ main ]          # Запуск при пуше в main
-  workflow_dispatch:            # Возможность запустить вручную
+    branches: [ main ]          # можно заменить на вашу основную ветку
+  workflow_dispatch:            # ручной запуск
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write           # Необходимо для создания тегов
+      contents: write           # необходимо для создания тегов
 
     steps:
-      # 1. Загружаем код со всей историей (чтобы получить все теги)
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0        # загружаем всю историю, чтобы увидеть все теги
 
-      # 2. Вычисляем следующий номер тега (1.x)
-      - name: Get next tag
+      - name: Calculate next tag
         id: tag
         run: |
-          # Найти все теги, начинающиеся с "1." (например, 1.0, 1.1, 1.2)
+          # Найти все теги вида 1.0, 1.1, 1.2, ...
           latest=$(git tag --list '1.*' | sed 's/^1\.//' | sort -n | tail -1)
           if [ -z "$latest" ]; then
             next=0
           else
             next=$((latest + 1))
           fi
-          echo "next_tag=1.$next" >> $GITHUB_OUTPUT
-          echo "Calculated next tag: 1.$next"
 
-      # 3. Создаём и пушим новый тег
+          # Защита от коллизий: если такой тег уже существует (например, из параллельного запуска),
+          # увеличиваем номер до тех пор, пока не найдём свободный.
+          while git rev-parse "1.$next" >/dev/null 2>&1; do
+            echo "Tag 1.$next already exists, incrementing..."
+            next=$((next + 1))
+          done
+
+          echo "next_tag=1.$next" >> $GITHUB_OUTPUT
+          echo "✅ Next tag: 1.$next"
+
       - name: Create and push tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.tag.outputs.next_tag }}
-          git push origin ${{ steps.tag.outputs.next_tag }}
 
-      # 4. (Опционально) Здесь можно добавить шаги сборки вашего проекта
-      # Например, установка зависимостей, компиляция, создание релиза и т.д.
-      # - name: Install dependencies
-      #   run: pip install -r requirements.txt
-      #
+          # Удаляем локальный тег, если он вдруг есть (чтобы избежать конфликта)
+          git tag -d ${{ steps.tag.outputs.next_tag }} 2>/dev/null || true
+
+          # Создаём тег
+          git tag ${{ steps.tag.outputs.next_tag }}
+
+          # Отправляем в удалённый репозиторий
+          git push origin ${{ steps.tag.outputs.next_tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Ниже вы можете добавить свои шаги сборки, тестирования, создания релиза и т.д.
+      # Например:
       # - name: Build executable
-      #   run: pyinstaller --onefile your_script.py
+      #   run: |
+      #     pip install pyinstaller
+      #     pyinstaller --onefile your_script.py
       #
       # - name: Create GitHub Release
-      #   uses: softprops/action-gh-release@v1
+      #   uses: softprops/action-gh-release@v2
       #   with:
       #     tag_name: ${{ steps.tag.outputs.next_tag }}
       #     name: Release ${{ steps.tag.outputs.next_tag }}
-      #     draft: false
-      #     prerelease: false
+      #     generate_release_notes: true
