@@ -1,5 +1,4 @@
 name: Build EXE and Create Release
-
 on:
   workflow_dispatch:
 
@@ -38,12 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Download built EXE
         uses: actions/download-artifact@v4
@@ -56,10 +55,17 @@ jobs:
           # Загружаем все теги из удалённого репозитория
           git fetch --tags --force
 
-          # Находим последний тег, отсортированный по версии (числовой порядок)
-          # Игнорируем возможный префикс 'v' и берём только теги с тремя цифрами
-          LATEST_TAG=$(git tag -l | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n -r | head -n1)
+          # Нормализуем теги: убираем 'v', добавляем .0 если версия из двух чисел (major.minor)
+          NORMALIZED=$(git tag -l | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | sed 's/^v//' | while read -r t; do
+            if [[ "$t" =~ ^[0-9]+\.[0-9]+$ ]]; then
+              echo "$t.0"
+            else
+              echo "$t"
+            fi
+          done)
 
+          # Находим самый свежий тег через числовую сортировку по каждому сегменту
+          LATEST_TAG=$(echo "$NORMALIZED" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)
           echo "Latest tag found: $LATEST_TAG"
 
           if [ -z "$LATEST_TAG" ]; then
@@ -72,6 +78,15 @@ jobs:
             minor=$((minor + 1))
             NEW_TAG="$major.$minor.0"
           fi
+
+          # Защита от коллизий: если вычисленный тег уже существует (локально или на remote),
+          # продолжаем увеличивать minor, пока не найдём свободную версию
+          while git rev-parse "$NEW_TAG" >/dev/null 2>&1 || git ls-remote --exit-code --tags origin "refs/tags/$NEW_TAG" >/dev/null 2>&1; do
+            echo "Tag $NEW_TAG already exists, trying next..."
+            IFS='.' read -r major minor patch <<< "$NEW_TAG"
+            minor=$((minor + 1))
+            NEW_TAG="$major.$minor.0"
+          done
 
           echo "New tag will be: $NEW_TAG"
           echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
