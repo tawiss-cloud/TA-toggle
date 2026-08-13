@@ -1,55 +1,92 @@
-name: Build and Auto-Tag
+name: Build EXE and Create Release
 
 on:
-  push:
-    branches: [ main ]          # замените на вашу основную ветку, если нужно
-  workflow_dispatch:            # ручной запуск из интерфейса GitHub
+  workflow_dispatch:
 
 jobs:
   build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # загружаем всю историю, включая все теги
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build EXE
+        run: |
+          python -m PyInstaller --onefile --noconsole --icon=icon.ico toggle_modes.py
+
+      - name: Upload EXE as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TA-toggle-exe
+          path: dist/toggle_modes.exe
+
+  release:
+    needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write           # обязательно для создания тегов
+      contents: write   # нужно для создания тегов и релизов
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0        # загружаем всю историю, чтобы получить все теги
+          fetch-depth: 0
 
-      - name: Fetch all tags from remote
-        run: git fetch --tags   # подтягиваем свежие теги из удалённого репозитория
+      - name: Download built EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: TA-toggle-exe
 
-      - name: Calculate next tag
-        id: tag
+      - name: Calculate next version
+        id: version
         run: |
-          # Находим максимальный номер среди тегов вида "1.xxx"
-          latest=$(git tag --list '1.*' | sed 's/^1\.//' | sort -n | tail -1)
-          if [ -z "$latest" ]; then
-            next=0
+          # Получить все теги (без префикса 'v', так как у вас уже есть 1.1.0)
+          git fetch --tags
+          # Найти самый свежий тег, отсортированный по версии (числовой порядок)
+          LATEST_TAG=$(git tag -l --sort=-v:refname | head -n 1)
+          echo "Latest tag found: $LATEST_TAG"
+
+          # Если тегов нет, начинаем с 1.0.0
+          if [ -z "$LATEST_TAG" ]; then
+            NEW_TAG="1.0.0"
           else
-            next=$((latest + 1))
+            # Убираем возможный префикс 'v', если он есть
+            CLEAN=${LATEST_TAG#v}
+            # Разбиваем на major.minor.patch
+            IFS='.' read -r major minor patch <<< "$CLEAN"
+            # Увеличиваем минорную версию, обнуляем patch
+            minor=$((minor + 1))
+            NEW_TAG="$major.$minor.0"
           fi
 
-          # Проверяем, не существует ли уже тег с таким номером локально
-          while git rev-parse "1.$next" >/dev/null 2>&1; do
-            echo "Tag 1.$next already exists locally, incrementing..."
-            next=$((next + 1))
-          done
-
-          # Проверяем, не существует ли такой тег на удалённом репозитории
-          while git ls-remote --tags origin "refs/tags/1.$next" | grep -q "1.$next"; do
-            echo "Tag 1.$next already exists on remote, incrementing..."
-            next=$((next + 1))
-          done
-
-          echo "next_tag=1.$next" >> $GITHUB_OUTPUT
-          echo "✅ Next tag: 1.$next"
+          echo "New tag will be: $NEW_TAG"
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
       - name: Create and push tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.tag.outputs.next_tag }}
-          # Явно передаём токен для аутентификации
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git ${{ steps.tag.outputs.next_tag }}
+          git tag ${{ steps.version.outputs.new_tag }}
+          git push origin ${{ steps.version.outputs.new_tag }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: toggle_modes.exe
+          tag_name: ${{ steps.version.outputs.new_tag }}
+          name: "TA-toggle ${{ steps.version.outputs.new_tag }}"
+          draft: false
+          prerelease: false
