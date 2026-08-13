@@ -10,7 +10,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # нужно для получения всех тегов
+          fetch-depth: 0   # загружаем всю историю, включая все теги
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -37,7 +37,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write   # нужно для создания тегов и релизов
 
     steps:
       - name: Checkout code
@@ -50,18 +50,43 @@ jobs:
         with:
           name: TA-toggle-exe
 
-      - name: Bump minor version and create tag
-        id: tag_version
-        uses: anothrNick/github-tag-action@1.67.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEFAULT_BUMP: minor   # увеличивает вторую цифру (v1.0.0 → v1.1.0)
+      - name: Calculate next version
+        id: version
+        run: |
+          # Получить все теги (без префикса 'v', так как у вас уже есть 1.1.0)
+          git fetch --tags
+          # Найти самый свежий тег, отсортированный по версии (числовой порядок)
+          LATEST_TAG=$(git tag -l --sort=-v:refname | head -n 1)
+          echo "Latest tag found: $LATEST_TAG"
+
+          # Если тегов нет, начинаем с 1.0.0
+          if [ -z "$LATEST_TAG" ]; then
+            NEW_TAG="1.0.0"
+          else
+            # Убираем возможный префикс 'v', если он есть
+            CLEAN=${LATEST_TAG#v}
+            # Разбиваем на major.minor.patch
+            IFS='.' read -r major minor patch <<< "$CLEAN"
+            # Увеличиваем минорную версию, обнуляем patch
+            minor=$((minor + 1))
+            NEW_TAG="$major.$minor.0"
+          fi
+
+          echo "New tag will be: $NEW_TAG"
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.version.outputs.new_tag }}
+          git push origin ${{ steps.version.outputs.new_tag }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: toggle_modes.exe
-          tag_name: ${{ steps.tag_version.outputs.new_tag }}
-          name: "TA-toggle ${{ steps.tag_version.outputs.new_tag }}"
+          tag_name: ${{ steps.version.outputs.new_tag }}
+          name: "TA-toggle ${{ steps.version.outputs.new_tag }}"
           draft: false
           prerelease: false
