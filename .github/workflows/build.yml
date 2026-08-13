@@ -1,92 +1,57 @@
-name: Build EXE and Create Release
+name: Build and Auto-Tag
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ main ]          # Запуск при пуше в main
+  workflow_dispatch:            # Возможность запустить вручную
 
 jobs:
   build:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # загружаем всю историю, включая все теги
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-
-      - name: Build EXE
-        run: |
-          python -m PyInstaller --onefile --noconsole --icon=icon.ico toggle_modes.py
-
-      - name: Upload EXE as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: TA-toggle-exe
-          path: dist/toggle_modes.exe
-
-  release:
-    needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # нужно для создания тегов и релизов
+      contents: write           # Необходимо для создания тегов
 
     steps:
+      # 1. Загружаем код со всей историей (чтобы получить все теги)
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Download built EXE
-        uses: actions/download-artifact@v4
-        with:
-          name: TA-toggle-exe
-
-      - name: Calculate next version
-        id: version
+      # 2. Вычисляем следующий номер тега (1.x)
+      - name: Get next tag
+        id: tag
         run: |
-          # Получить все теги (без префикса 'v', так как у вас уже есть 1.1.0)
-          git fetch --tags
-          # Найти самый свежий тег, отсортированный по версии (числовой порядок)
-          LATEST_TAG=$(git tag -l --sort=-v:refname | head -n 1)
-          echo "Latest tag found: $LATEST_TAG"
-
-          # Если тегов нет, начинаем с 1.0.0
-          if [ -z "$LATEST_TAG" ]; then
-            NEW_TAG="1.0.0"
+          # Найти все теги, начинающиеся с "1." (например, 1.0, 1.1, 1.2)
+          latest=$(git tag --list '1.*' | sed 's/^1\.//' | sort -n | tail -1)
+          if [ -z "$latest" ]; then
+            next=0
           else
-            # Убираем возможный префикс 'v', если он есть
-            CLEAN=${LATEST_TAG#v}
-            # Разбиваем на major.minor.patch
-            IFS='.' read -r major minor patch <<< "$CLEAN"
-            # Увеличиваем минорную версию, обнуляем patch
-            minor=$((minor + 1))
-            NEW_TAG="$major.$minor.0"
+            next=$((latest + 1))
           fi
+          echo "next_tag=1.$next" >> $GITHUB_OUTPUT
+          echo "Calculated next tag: 1.$next"
 
-          echo "New tag will be: $NEW_TAG"
-          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-
+      # 3. Создаём и пушим новый тег
       - name: Create and push tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.version.outputs.new_tag }}
-          git push origin ${{ steps.version.outputs.new_tag }}
+          git tag ${{ steps.tag.outputs.next_tag }}
+          git push origin ${{ steps.tag.outputs.next_tag }}
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: toggle_modes.exe
-          tag_name: ${{ steps.version.outputs.new_tag }}
-          name: "TA-toggle ${{ steps.version.outputs.new_tag }}"
-          draft: false
-          prerelease: false
+      # 4. (Опционально) Здесь можно добавить шаги сборки вашего проекта
+      # Например, установка зависимостей, компиляция, создание релиза и т.д.
+      # - name: Install dependencies
+      #   run: pip install -r requirements.txt
+      #
+      # - name: Build executable
+      #   run: pyinstaller --onefile your_script.py
+      #
+      # - name: Create GitHub Release
+      #   uses: softprops/action-gh-release@v1
+      #   with:
+      #     tag_name: ${{ steps.tag.outputs.next_tag }}
+      #     name: Release ${{ steps.tag.outputs.next_tag }}
+      #     draft: false
+      #     prerelease: false
