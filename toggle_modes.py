@@ -11,9 +11,10 @@ from tkinter import ttk
 import json
 import os
 import queue
+import webbrowser
 
 # ===================== НАСТРОЙКИ =====================
-DEBUG = False   # Включим отладку для диагностики
+DEBUG = False
 
 # ===================== WINAPI =====================
 user32 = ctypes.windll.user32
@@ -65,9 +66,9 @@ last_switch_time = 0
 DELAY = 1
 
 # Ручной режим
-manual_override_active = False      # включён ли ручной режим
-manual_override_mode = 0            # какой режим установлен вручную (0 или 1)
-manual_override_waiting = False     # ожидаем появления игры (если ручной режим включён, а игра не запущена)
+manual_override_active = False
+manual_override_mode = 0
+manual_override_waiting = False
 
 DEFAULT_MODES = [
     {"name": "Стандартный", "local_dimming": 2, "brightness": 20},
@@ -121,7 +122,7 @@ MEDIA_PLAYER_PROCESSES = [
 
 EXCLUDED_PROCESSES = [
     "wallpaper32.exe", "wallpaper64.exe", "chrome.exe", "firefox.exe",
-    "msedge.exe", "brave.exe", "opera.exe", "explorer.exe",
+    "msedge.exe", "brave.exe", "opera.exe", "explorer.exe", "StartMenuExperienceHost.exe",
     "cmd.exe", "powershell.exe", "notepad.exe", "mspaint.exe"
 ]
 
@@ -564,46 +565,24 @@ def monitor_loop():
 
             hwnd = user32.GetForegroundWindow()
 
-            # Обработка ручного режима
+            # ==================== РУЧНОЙ РЕЖИМ (исправлен) ====================
             if manual_override_active:
-                log(f"[Ручной режим] Активен, waiting={manual_override_waiting}, game_hwnd={hex(game_window_hwnd) if game_window_hwnd else None}")
-
-                # Если мы ждём появления игры и есть активное окно
-                if manual_override_waiting and hwnd is not None:
-                    # Получаем имя процесса для проверки исключений
-                    proc_name = get_process_name(hwnd)
-                    if proc_name and proc_name.lower() in [p.lower() for p in EXCLUDED_PROCESSES]:
-                        log(f"[Ручной режим] Окно {hex(hwnd)} исключено (процесс {proc_name})")
+                # Если нет запомненного окна – ищем его
+                if game_window_hwnd is None:
+                    if manual_override_waiting:
+                        # Ждём появления игрового окна
+                        if hwnd and is_game_window(hwnd):
+                            game_window_hwnd = hwnd
+                            manual_override_waiting = False
+                            log(f"[Ручной режим] Запомнено игровое окно {hex(hwnd)}")
                     else:
-                        # Проверяем размеры
-                        rect = RECT()
-                        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                            monitor = user32.MonitorFromWindow(hwnd, 2)
-                            if monitor:
-                                mi = MONITORINFO()
-                                mi.cbSize = ctypes.sizeof(MONITORINFO)
-                                if user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
-                                    mon_w = mi.rcMonitor.right - mi.rcMonitor.left
-                                    mon_h = mi.rcMonitor.bottom - mi.rcMonitor.top
-                                    win_w = rect.right - rect.left
-                                    win_h = rect.bottom - rect.top
-                                    if win_w / mon_w >= 0.90 and win_h / mon_h >= 0.90:
-                                        # Проверяем стиль окна
-                                        style = user32.GetWindowLongW(hwnd, GWL_STYLE)
-                                        has_caption = bool(style & WS_CAPTION)
-                                        is_popup = bool(style & WS_POPUP)
-                                        # Если окно имеет рамку и не является popup – скорее всего не игра
-                                        if has_caption and not is_popup:
-                                            log(f"[Ручной режим] Большое окно {hex(hwnd)} имеет рамку, не считаем игрой")
-                                        else:
-                                            game_window_hwnd = hwnd
-                                            manual_override_waiting = False
-                                            log(f"[Ручной режим] Обнаружено большое окно {hex(hwnd)} (процесс {proc_name}), считаем игрой")
-
-                # Если есть запомненное окно игры, проверяем, не закрылось ли оно и всё ли ещё является игрой
-                if game_window_hwnd is not None:
+                        # Странная ситуация – переходим в ожидание
+                        manual_override_waiting = True
+                        log("[Ручной режим] Нет запомненного окна, переходим в ожидание")
+                else:
+                    # Проверяем, существует ли окно и является ли игрой
                     if not user32.IsWindow(game_window_hwnd):
-                        log(f"[Ручной режим] Окно {hex(game_window_hwnd)} больше не существует – сброс ручного режима")
+                        log(f"[Ручной режим] Окно {hex(game_window_hwnd)} закрыто – сброс")
                         manual_override_active = False
                         manual_override_waiting = False
                         game_window_hwnd = None
@@ -613,49 +592,24 @@ def monitor_loop():
                             apply_mode_by_index(0)
                         time.sleep(1)
                         continue
-                    else:
-                        # Проверяем, является ли окно всё ещё игровым (используем is_game_window)
-                        if not is_game_window(game_window_hwnd):
-                            # Дополнительно проверим, не стало ли окно маленьким или не изменился ли процесс
-                            rect = RECT()
-                            if user32.GetWindowRect(game_window_hwnd, ctypes.byref(rect)):
-                                monitor = user32.MonitorFromWindow(game_window_hwnd, 2)
-                                if monitor:
-                                    mi = MONITORINFO()
-                                    mi.cbSize = ctypes.sizeof(MONITORINFO)
-                                    if user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
-                                        mon_w = mi.rcMonitor.right - mi.rcMonitor.left
-                                        mon_h = mi.rcMonitor.bottom - mi.rcMonitor.top
-                                        win_w = rect.right - rect.left
-                                        win_h = rect.bottom - rect.top
-                                        if not (win_w / mon_w >= 0.90 and win_h / mon_h >= 0.90):
-                                            log(f"[Ручной режим] Окно {hex(game_window_hwnd)} больше не занимает 90% экрана – сброс")
-                                            manual_override_active = False
-                                            manual_override_waiting = False
-                                            game_window_hwnd = None
-                                            last_reported_state = None
-                                            game_counter = 0
-                                            if current_mode_index != 0:
-                                                apply_mode_by_index(0)
-                                            time.sleep(1)
-                                            continue
-                            if manual_override_active and is_game_window(game_window_hwnd) == False:
-                                log(f"[Ручной режим] Окно {hex(game_window_hwnd)} больше не является игрой – сброс")
-                                manual_override_active = False
-                                manual_override_waiting = False
-                                game_window_hwnd = None
-                                last_reported_state = None
-                                game_counter = 0
-                                if current_mode_index != 0:
-                                    apply_mode_by_index(0)
-                                time.sleep(1)
-                                continue
+                    elif not is_game_window(game_window_hwnd):
+                        log(f"[Ручной режим] Окно {hex(game_window_hwnd)} больше не игровое – сброс")
+                        manual_override_active = False
+                        manual_override_waiting = False
+                        game_window_hwnd = None
+                        last_reported_state = None
+                        game_counter = 0
+                        if current_mode_index != 0:
+                            apply_mode_by_index(0)
+                        time.sleep(1)
+                        continue
+                    # Окно всё ещё игра – остаёмся в игровом режиме
 
-                # Пропускаем любые авто-переключения в ручном режиме
+                # Пропускаем автоматическое переключение
                 time.sleep(1)
                 continue
 
-            # Стандартная логика (ручной режим выключен)
+            # ==================== СТАНДАРТНАЯ АВТО-ЛОГИКА ====================
             is_game = False
             is_media = False
             if hwnd:
@@ -754,25 +708,21 @@ def toggle_mode(icon=None):
         sync_current_mode()
         new_mode_index = 1 - current_mode_index
         
-        # Применяем переключение
         if apply_mode_by_index(new_mode_index, force_hdr_check=True):
             last_switch_time = now
             mode_name = modes[current_mode_index]["name"]
             
-            # Логика ручного режима:
-            # При любом ручном переключении мы включаем ручной режим.
+            # Включаем ручной режим
             manual_override_active = True
             manual_override_mode = current_mode_index
             log(f"Ручной режим включён, целевой режим: {modes[current_mode_index]['name']}")
             
-            # Запоминаем активное окно игры, если оно есть
             active_hwnd = user32.GetForegroundWindow()
             if active_hwnd and is_game_window(active_hwnd):
                 game_window_hwnd = active_hwnd
                 manual_override_waiting = False
                 log(f"Запомнено окно игры {hex(active_hwnd)} для ручного режима")
             else:
-                # Если игра не запущена, устанавливаем флаг ожидания
                 game_window_hwnd = None
                 manual_override_waiting = True
                 log("Ручной режим включён, игра не запущена – ожидаем появления игры")
@@ -1149,9 +1099,10 @@ def on_about(icon, item):
         about_window.geometry(f"+{x}+{y}")
         main_frame = ttk.Frame(about_window, padding="20")
         main_frame.pack(fill=tk.BOTH, expand=True)
+
         title_label = ttk.Label(main_frame, text="Переключение режимов монитора", font=('Arial', 14, 'bold'))
         title_label.pack(pady=10)
-        hdr_status = "Включена" if hdr_settings["auto_set_preset"] else "Отключена"
+
         info_text = (
             f"Горячая клавиша: {hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)}\n\n"
             "Текущие настройки (SDR):\n"
@@ -1160,14 +1111,29 @@ def on_about(icon, item):
             "Исключены из определения игр:\n"
             "Wallpaper Engine, Chrome, Firefox, Edge, Brave, Opera, Проводник,\n"
             "cmd, powershell, notepad, mspaint\n\n"
-            "Версия: 1.1 (v35)"
+            "Версия: 1.2.(v36)\n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
+
+        link_frame = ttk.Frame(main_frame)
+        link_frame.pack(pady=(0, 10))
+        link_label = tk.Label(
+            link_frame,
+            text="https://github.com/tawiss-cloud/TA-toggle",
+            fg="blue",
+            cursor="hand2",
+            font=('Arial', 10, 'underline')
+        )
+        link_label.pack()
+        link_label.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/tawiss-cloud/TA-toggle"))
+
         close_button = ttk.Button(main_frame, text="Закрыть", command=about_window.destroy)
         close_button.pack(pady=10)
+
         about_window.protocol("WM_DELETE_WINDOW", about_window.destroy)
         about_window.focus_force()
+
     tk_queue.put(('window', create_about_window))
 
 def on_quit(icon, item):
