@@ -2,25 +2,28 @@ name: Build and Auto-Tag
 
 on:
   push:
-    branches: [ main ]          # можно заменить на вашу основную ветку
-  workflow_dispatch:            # ручной запуск
+    branches: [ main ]          # замените на вашу основную ветку, если нужно
+  workflow_dispatch:            # ручной запуск из интерфейса GitHub
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write           # необходимо для создания тегов
+      contents: write           # обязательно для создания тегов
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0        # загружаем всю историю, чтобы увидеть все теги
+          fetch-depth: 0        # загружаем всю историю, чтобы получить все теги
+
+      - name: Fetch all tags from remote
+        run: git fetch --tags   # подтягиваем свежие теги из удалённого репозитория
 
       - name: Calculate next tag
         id: tag
         run: |
-          # Найти все теги вида 1.0, 1.1, 1.2, ...
+          # Находим максимальный номер среди тегов вида "1.xxx"
           latest=$(git tag --list '1.*' | sed 's/^1\.//' | sort -n | tail -1)
           if [ -z "$latest" ]; then
             next=0
@@ -28,10 +31,15 @@ jobs:
             next=$((latest + 1))
           fi
 
-          # Защита от коллизий: если такой тег уже существует (например, из параллельного запуска),
-          # увеличиваем номер до тех пор, пока не найдём свободный.
+          # Проверяем, не существует ли уже тег с таким номером локально
           while git rev-parse "1.$next" >/dev/null 2>&1; do
-            echo "Tag 1.$next already exists, incrementing..."
+            echo "Tag 1.$next already exists locally, incrementing..."
+            next=$((next + 1))
+          done
+
+          # Проверяем, не существует ли такой тег на удалённом репозитории
+          while git ls-remote --tags origin "refs/tags/1.$next" | grep -q "1.$next"; do
+            echo "Tag 1.$next already exists on remote, incrementing..."
             next=$((next + 1))
           done
 
@@ -42,28 +50,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Удаляем локальный тег, если он вдруг есть (чтобы избежать конфликта)
-          git tag -d ${{ steps.tag.outputs.next_tag }} 2>/dev/null || true
-
-          # Создаём тег
           git tag ${{ steps.tag.outputs.next_tag }}
-
-          # Отправляем в удалённый репозиторий
-          git push origin ${{ steps.tag.outputs.next_tag }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Ниже вы можете добавить свои шаги сборки, тестирования, создания релиза и т.д.
-      # Например:
-      # - name: Build executable
-      #   run: |
-      #     pip install pyinstaller
-      #     pyinstaller --onefile your_script.py
-      #
-      # - name: Create GitHub Release
-      #   uses: softprops/action-gh-release@v2
-      #   with:
-      #     tag_name: ${{ steps.tag.outputs.next_tag }}
-      #     name: Release ${{ steps.tag.outputs.next_tag }}
-      #     generate_release_notes: true
+          # Явно передаём токен для аутентификации
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git ${{ steps.tag.outputs.next_tag }}
