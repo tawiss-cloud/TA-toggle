@@ -10,7 +10,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # загружаем всю историю, включая все теги
+          fetch-depth: 0   # загружаем всю историю
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -37,7 +37,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # нужно для создания тегов и релизов
+      contents: write
 
     steps:
       - name: Checkout code
@@ -53,25 +53,27 @@ jobs:
       - name: Calculate next version
         id: version
         run: |
-          # Получить все теги (без префикса 'v', так как у вас уже есть 1.1.0)
-          git fetch --tags
-          # Найти самый свежий тег, отсортированный по версии (числовой порядок)
-          LATEST_TAG=$(git tag -l --sort=-v:refname | head -n 1)
+          # Подтягиваем все теги из удалённого репозитория
+          git fetch --tags --force
+          # Показываем все теги для диагностики (опционально)
+          echo "All existing tags:"
+          git tag -l
+          # Находим последний тег, сортируя по версии (числовой порядок)
+          LATEST_TAG=$(git tag -l | sort -V -r | head -n 1)
           echo "Latest tag found: $LATEST_TAG"
-
-          # Если тегов нет, начинаем с 1.0.0
+          
           if [ -z "$LATEST_TAG" ]; then
             NEW_TAG="1.0.0"
           else
-            # Убираем возможный префикс 'v', если он есть
+            # Убираем возможный префикс 'v' в начале
             CLEAN=${LATEST_TAG#v}
             # Разбиваем на major.minor.patch
             IFS='.' read -r major minor patch <<< "$CLEAN"
-            # Увеличиваем минорную версию, обнуляем patch
+            # Увеличиваем минорную версию, патч обнуляем
             minor=$((minor + 1))
             NEW_TAG="$major.$minor.0"
           fi
-
+          
           echo "New tag will be: $NEW_TAG"
           echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
