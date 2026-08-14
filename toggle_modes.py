@@ -237,6 +237,10 @@ def safe_monitor_operation(operation, monitor_idx=None):
             monitor = None
 
 def is_hdr_enabled(force_refresh=False):
+    """
+    Проверяет HDR по яркости 100% с кешированием.
+    При любой ошибке возвращает "hdr" для блокировки переключений.
+    """
     global hdr_status_cache, hdr_cache_time
     with hdr_cache_lock:
         now = time.time()
@@ -247,10 +251,11 @@ def is_hdr_enabled(force_refresh=False):
                     return "hdr" if current_brightness == 100 else "ok"
                 except Exception as e:
                     log(f"Ошибка чтения яркости: {e}")
-                    return "error"
+                    # При ошибке считаем, что HDR включён (безопасное поведение)
+                    return "hdr"
             result = safe_monitor_operation(check_hdr)
             if result is None:
-                result = "ok"
+                result = "hdr"   # если не удалось прочитать, тоже блокируем
             hdr_status_cache = result
             hdr_cache_time = now
         return hdr_status_cache
@@ -438,9 +443,10 @@ def apply_mode_by_index(index, force_hdr_check=False):
     global current_mode_index, tray_icon
     if current_mode_index == index:
         return True
+    # Проверка HDR – если HDR включен или ошибка, блокируем переключение
     hdr_check = is_hdr_enabled(force_refresh=force_hdr_check)
     if hdr_check == "hdr":
-        log("HDR включен – переключение режимов заблокировано")
+        log("HDR включен или ошибка чтения – переключение режимов заблокировано")
         return False
     for attempt in range(3):
         log(f"Попытка переключения на режим {index} (шаг {attempt+1}/3)")
@@ -532,15 +538,21 @@ def delayed_media_switch(hwnd):
     global media_timer, game_window_hwnd, last_reported_state
     with media_timer_lock:
         media_timer = None
+    # Проверка HDR – блокируем переключение при HDR или ошибке
     hdr_check = is_hdr_enabled()
     if hdr_check == "hdr":
-        log("HDR включен – переключение медиаплеера отменено")
+        log("HDR включен или ошибка – переключение медиаплеера отменено")
         return
     if not user32.IsWindow(hwnd):
         log("Медиаплеер закрыт до срабатывания таймера – отмена")
         return
     if not is_game_window(hwnd):
         log("Окно перестало быть медиаплеером за время задержки – отмена")
+        return
+    # Ещё одна проверка HDR перед финальным переключением
+    hdr_check = is_hdr_enabled(force_refresh=True)
+    if hdr_check == "hdr":
+        log("HDR включился перед финальным переключением – отмена")
         return
     if current_mode_index != 1:
         log(f"Медиаплеер подтверждён через {media_delay_seconds} сек – переключение на игровой режим")
@@ -565,22 +577,18 @@ def monitor_loop():
 
             hwnd = user32.GetForegroundWindow()
 
-            # ==================== РУЧНОЙ РЕЖИМ (исправлен) ====================
+            # ==================== РУЧНОЙ РЕЖИМ ====================
             if manual_override_active:
-                # Если нет запомненного окна – ищем его
                 if game_window_hwnd is None:
                     if manual_override_waiting:
-                        # Ждём появления игрового окна
                         if hwnd and is_game_window(hwnd):
                             game_window_hwnd = hwnd
                             manual_override_waiting = False
                             log(f"[Ручной режим] Запомнено игровое окно {hex(hwnd)}")
                     else:
-                        # Странная ситуация – переходим в ожидание
                         manual_override_waiting = True
                         log("[Ручной режим] Нет запомненного окна, переходим в ожидание")
                 else:
-                    # Проверяем, существует ли окно и является ли игрой
                     if not user32.IsWindow(game_window_hwnd):
                         log(f"[Ручной режим] Окно {hex(game_window_hwnd)} закрыто – сброс")
                         manual_override_active = False
@@ -592,20 +600,8 @@ def monitor_loop():
                             apply_mode_by_index(0)
                         time.sleep(1)
                         continue
-                    elif not is_game_window(game_window_hwnd):
-                        log(f"[Ручной режим] Окно {hex(game_window_hwnd)} больше не игровое – сброс")
-                        manual_override_active = False
-                        manual_override_waiting = False
-                        game_window_hwnd = None
-                        last_reported_state = None
-                        game_counter = 0
-                        if current_mode_index != 0:
-                            apply_mode_by_index(0)
-                        time.sleep(1)
-                        continue
-                    # Окно всё ещё игра – остаёмся в игровом режиме
-
-                # Пропускаем автоматическое переключение
+                    # Окно существует, ручной режим остаётся активным
+                # Пропускаем авто-переключения
                 time.sleep(1)
                 continue
 
@@ -627,12 +623,17 @@ def monitor_loop():
                         if game_window_hwnd == hwnd and last_reported_state == True:
                             pass
                         else:
-                            with media_timer_lock:
-                                if media_timer is None:
-                                    log(f"Медиаплеер обнаружен – запускаем задержку {media_delay_seconds} сек")
-                                    media_timer = threading.Timer(media_delay_seconds, delayed_media_switch, args=[hwnd])
-                                    media_timer.daemon = True
-                                    media_timer.start()
+                            # Перед запуском таймера проверяем HDR
+                            hdr_check = is_hdr_enabled()
+                            if hdr_check == "hdr":
+                                log("HDR включен или ошибка – медиаплеер не активирует игровой режим")
+                            else:
+                                with media_timer_lock:
+                                    if media_timer is None:
+                                        log(f"Медиаплеер обнаружен – запускаем задержку {media_delay_seconds} сек")
+                                        media_timer = threading.Timer(media_delay_seconds, delayed_media_switch, args=[hwnd])
+                                        media_timer.daemon = True
+                                        media_timer.start()
                 else:
                     with media_timer_lock:
                         if media_timer is not None:
@@ -678,6 +679,7 @@ def monitor_loop():
 
         time.sleep(1)
 
+# ==================== ИСПРАВЛЕННАЯ ФУНКЦИЯ toggle_mode ====================
 def toggle_mode(icon=None):
     global current_mode_index, last_switch_time, last_reported_state
     global manual_override_active, manual_override_mode, manual_override_waiting
@@ -692,12 +694,8 @@ def toggle_mode(icon=None):
         log("Начало переключения режима")
         
         hdr_check_result = is_hdr_enabled(force_refresh=True)
-        if hdr_check_result == "error":
-            log("Ошибка проверки HDR")
-            show_notification("⚠️ Ошибка проверки HDR")
-            return
         if hdr_check_result == "hdr":
-            log("HDR включен - переключение заблокировано")
+            log("HDR включен или ошибка - переключение заблокировано")
             show_notification("⚠️ Включен HDR")
             return
         
@@ -712,22 +710,32 @@ def toggle_mode(icon=None):
             last_switch_time = now
             mode_name = modes[current_mode_index]["name"]
             
-            # Включаем ручной режим
-            manual_override_active = True
-            manual_override_mode = current_mode_index
-            log(f"Ручной режим включён, целевой режим: {modes[current_mode_index]['name']}")
-            
-            active_hwnd = user32.GetForegroundWindow()
-            if active_hwnd and is_game_window(active_hwnd):
-                game_window_hwnd = active_hwnd
+            # -------- ИЗМЕНЕНИЯ ЗДЕСЬ --------
+            if new_mode_index == 0:
+                # Ручное переключение на стандартный – отключаем ручной режим
+                manual_override_active = False
                 manual_override_waiting = False
-                log(f"Запомнено окно игры {hex(active_hwnd)} для ручного режима")
-            else:
                 game_window_hwnd = None
-                manual_override_waiting = True
-                log("Ручной режим включён, игра не запущена – ожидаем появления игры")
-            
-            last_reported_state = (current_mode_index == 1)
+                last_reported_state = False
+                log("Ручной режим выключен (переключение на стандартный)")
+            else:  # new_mode_index == 1
+                # Включаем ручной режим для игрового
+                manual_override_active = True
+                manual_override_mode = current_mode_index
+                log(f"Ручной режим включён, целевой режим: {modes[current_mode_index]['name']}")
+                
+                active_hwnd = user32.GetForegroundWindow()
+                if active_hwnd and is_game_window(active_hwnd):
+                    game_window_hwnd = active_hwnd
+                    manual_override_waiting = False
+                    log(f"Запомнено окно игры {hex(active_hwnd)} для ручного режима")
+                else:
+                    game_window_hwnd = None
+                    manual_override_waiting = True
+                    log("Ручной режим включён, игра не запущена – ожидаем появления игры")
+                
+                last_reported_state = True
+            # -------- КОНЕЦ ИЗМЕНЕНИЙ --------
             
             show_notification(f"Режим: {mode_name}")
             if icon:
@@ -1111,7 +1119,7 @@ def on_about(icon, item):
             "Исключены из определения игр:\n"
             "Wallpaper Engine, Chrome, Firefox, Edge, Brave, Opera, Проводник,\n"
             "cmd, powershell, notepad, mspaint\n\n"
-            "Версия: 1.2.(v36)\n"
+            "Версия: 1.2 \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
