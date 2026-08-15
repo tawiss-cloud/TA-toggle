@@ -34,11 +34,11 @@ Python utility for automatically switching settings on Titan Army monitors.
 The program allows you to manually or automatically switch between Standard and Gaming presets for monitor brightness and local dimming, depending on whether a game or supported media player is running.
 
 ## Features
-Automatic game detection
-Automatic media player detection (MPC-HC, MPC-BE, VLC, PotPlayer)
-HDR detection
-Automatic switching of local dimming and brightness settings
-Manual mode switching (Ctrl + Alt + Z)
+- Automatic game detection
+- Automatic media player detection (MPC-HC, MPC-BE, VLC, PotPlayer)
+- HDR detection
+- Automatic switching of local dimming and brightness settings
+- Manual mode switching (Ctrl + Alt + Z)
 
 ## Controls
 ### Ctrl + Alt + Z
