@@ -23,8 +23,6 @@ SUPPORTED_LANGUAGES = ["ru", "en"]
 current_language = "ru"
 
 def detect_system_language():
-    """При первом запуске определяем язык интерфейса Windows.
-    Русская локаль -> 'ru', любая другая -> 'en'."""
     try:
         lang_id = ctypes.windll.kernel32.GetUserDefaultUILanguage()
         primary_lang = lang_id & 0x3FF
@@ -417,12 +415,10 @@ def load_settings():
     except Exception as e:
         log(f"Ошибка загрузки: {e}")
 
-    # Первый запуск (или язык ещё не сохранён) — определяем язык Windows
     if not language_loaded:
         current_language = detect_system_language()
         log(f"Язык определён автоматически: {current_language}")
 
-    # Если режимы не были загружены из настроек — используем локализованные значения по умолчанию
     if not modes_loaded:
         modes = get_default_modes()
 
@@ -476,10 +472,6 @@ def safe_monitor_operation(operation, monitor_idx=None):
             monitor = None
 
 def is_hdr_enabled(force_refresh=False):
-    """
-    Проверяет HDR по яркости 100% с кешированием.
-    При любой ошибке возвращает "hdr" для блокировки переключений.
-    """
     global hdr_status_cache, hdr_cache_time
     with hdr_cache_lock:
         now = time.time()
@@ -490,11 +482,10 @@ def is_hdr_enabled(force_refresh=False):
                     return "hdr" if current_brightness == 100 else "ok"
                 except Exception as e:
                     log(f"Ошибка чтения яркости: {e}")
-                    # При ошибке считаем, что HDR включён (безопасное поведение)
                     return "hdr"
             result = safe_monitor_operation(check_hdr)
             if result is None:
-                result = "hdr"   # если не удалось прочитать, тоже блокируем
+                result = "hdr"
             hdr_status_cache = result
             hdr_cache_time = now
         return hdr_status_cache
@@ -666,6 +657,11 @@ def retry_brightness_only(mode_index, attempts=5, delay=0.5):
         if current_mode_index != mode_index:
             log("Дожим яркости отменён: режим уже изменился")
             return
+        # Проверяем текущую яркость
+        current_brightness, _ = get_current_monitor_settings()
+        if current_brightness is not None and current_brightness == mode["brightness"]:
+            log(f"Яркость уже {mode['brightness']}, дожим не требуется")
+            return
         def set_brightness(monitor):
             try:
                 monitor.vcp.set_vcp_feature(VCP_BRIGHTNESS, mode["brightness"])
@@ -682,7 +678,6 @@ def apply_mode_by_index(index, force_hdr_check=False):
     global current_mode_index, tray_icon
     if current_mode_index == index:
         return True
-    # Проверка HDR – если HDR включен или ошибка, блокируем переключение
     hdr_check = is_hdr_enabled(force_refresh=force_hdr_check)
     if hdr_check == "hdr":
         log("HDR включен или ошибка чтения – переключение режимов заблокировано")
@@ -777,7 +772,6 @@ def delayed_media_switch(hwnd):
     global media_timer, game_window_hwnd, last_reported_state
     with media_timer_lock:
         media_timer = None
-    # Проверка HDR – блокируем переключение при HDR или ошибке
     hdr_check = is_hdr_enabled()
     if hdr_check == "hdr":
         log("HDR включен или ошибка – переключение медиаплеера отменено")
@@ -788,7 +782,6 @@ def delayed_media_switch(hwnd):
     if not is_game_window(hwnd):
         log("Окно перестало быть медиаплеером за время задержки – отмена")
         return
-    # Ещё одна проверка HDR перед финальным переключением
     hdr_check = is_hdr_enabled(force_refresh=True)
     if hdr_check == "hdr":
         log("HDR включился перед финальным переключением – отмена")
@@ -862,7 +855,6 @@ def monitor_loop():
                         if game_window_hwnd == hwnd and last_reported_state == True:
                             pass
                         else:
-                            # Перед запуском таймера проверяем HDR
                             hdr_check = is_hdr_enabled()
                             if hdr_check == "hdr":
                                 log("HDR включен или ошибка – медиаплеер не активирует игровой режим")
@@ -918,7 +910,7 @@ def monitor_loop():
 
         time.sleep(1)
 
-# ==================== ИСПРАВЛЕННАЯ ФУНКЦИЯ toggle_mode ====================
+# ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ toggle_mode ==========
 def toggle_mode(icon=None):
     global current_mode_index, last_switch_time, last_reported_state
     global manual_override_active, manual_override_mode, manual_override_waiting
@@ -949,19 +941,29 @@ def toggle_mode(icon=None):
             last_switch_time = now
             mode_name = modes[current_mode_index]["name"]
             
-            # -------- ИЗМЕНЕНИЯ ЗДЕСЬ --------
             if new_mode_index == 0:
-                # Ручное переключение на стандартный – отключаем ручной режим
-                manual_override_active = False
-                manual_override_waiting = False
-                game_window_hwnd = None
-                last_reported_state = False
-                log("Ручной режим выключен (переключение на стандартный)")
+                # Ручное переключение на стандартный
+                active_hwnd = user32.GetForegroundWindow()
+                if active_hwnd and is_game_window(active_hwnd):
+                    # Игра активна – включаем ручной режим с целевым стандартным и запоминаем окно
+                    manual_override_active = True
+                    manual_override_mode = 0
+                    game_window_hwnd = active_hwnd
+                    manual_override_waiting = False
+                    last_reported_state = False
+                    log(f"Ручной режим включён (стандартный), запомнено окно игры {hex(active_hwnd)}")
+                else:
+                    # Игра не активна – выключаем ручной режим полностью
+                    manual_override_active = False
+                    manual_override_waiting = False
+                    game_window_hwnd = None
+                    last_reported_state = False
+                    log("Ручной режим выключен (переключение на стандартный, игра не активна)")
             else:  # new_mode_index == 1
-                # Включаем ручной режим для игрового
+                # Ручное переключение на игровой
                 manual_override_active = True
-                manual_override_mode = current_mode_index
-                log(f"Ручной режим включён, целевой режим: {modes[current_mode_index]['name']}")
+                manual_override_mode = 1
+                log(f"Ручной режим включён, целевой режим: {mode_name}")
                 
                 active_hwnd = user32.GetForegroundWindow()
                 if active_hwnd and is_game_window(active_hwnd):
@@ -974,7 +976,6 @@ def toggle_mode(icon=None):
                     log("Ручной режим включён, игра не запущена – ожидаем появления игры")
                 
                 last_reported_state = True
-            # -------- КОНЕЦ ИЗМЕНЕНИЙ --------
             
             show_notification(t("notif_mode", mode=mode_name))
             if icon:
@@ -986,6 +987,8 @@ def toggle_mode(icon=None):
         log("="*50)
     except Exception as e:
         log(f"Ошибка переключения: {e}")
+
+# ========== КОНЕЦ ИЗМЕНЕНИЙ ==========
 
 def get_local_dimming_name(value):
     for option in get_local_dimming_options():
@@ -1138,6 +1141,7 @@ def create_settings_window():
         main_frame = ttk.Frame(scrollable_frame, padding="15")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
+        # -------- Авто-переключение --------
         auto_switch_var = tk.BooleanVar(value=auto_switch_enabled)
         auto_switch_check = ttk.Checkbutton(
             main_frame,
@@ -1170,6 +1174,7 @@ def create_settings_window():
         auto_switch_var.trace('w', toggle_media_players_state)
         media_players_var.trace('w', toggle_media_delay_state)
 
+        # -------- Стандартный режим --------
         standard_frame = ttk.LabelFrame(main_frame, text=t("settings_standard_mode"), padding="10")
         standard_frame.pack(fill=tk.X, pady=(0, 15))
         ttk.Label(standard_frame, text=t("settings_brightness_label")).pack(anchor=tk.W, pady=(0, 5))
@@ -1193,6 +1198,7 @@ def create_settings_window():
         standard_desc_label.pack(anchor=tk.W, pady=(5, 0))
         on_standard_dimming_select()
 
+        # -------- Игровой режим --------
         gaming_frame = ttk.LabelFrame(main_frame, text=t("settings_gaming_mode"), padding="10")
         gaming_frame.pack(fill=tk.X, pady=(0, 15))
         ttk.Label(gaming_frame, text=t("settings_brightness_label")).pack(anchor=tk.W, pady=(0, 5))
@@ -1216,6 +1222,7 @@ def create_settings_window():
         gaming_desc_label.pack(anchor=tk.W, pady=(5, 0))
         on_gaming_dimming_select()
 
+        # -------- Дополнительные настройки (чекбокс) --------
         advanced_frame = ttk.Frame(main_frame)
         advanced_frame.pack(anchor=tk.W, fill=tk.X, pady=(0, 5))
         advanced_var = tk.BooleanVar(value=advanced_settings_enabled)
@@ -1223,11 +1230,17 @@ def create_settings_window():
             advanced_frame,
             text=t("settings_advanced_settings"),
             variable=advanced_var,
-            command=lambda: toggle_advanced_visibility()
+            command=lambda: toggle_advanced_container()
         )
         advanced_check.pack(anchor=tk.W)
 
-        hdr_frame = ttk.LabelFrame(main_frame, text=t("settings_hdr_group"), padding="10")
+        # Контейнер для скрываемых настроек
+        advanced_container = ttk.Frame(main_frame)
+
+        # -------- HDR настройки (внутри контейнера) --------
+        hdr_frame = ttk.LabelFrame(advanced_container, text=t("settings_hdr_group"), padding="10")
+        hdr_frame.pack(fill=tk.X, pady=(0, 15))
+
         auto_set_var = tk.BooleanVar(value=hdr_settings["auto_set_preset"])
         auto_set_check = ttk.Checkbutton(
             hdr_frame,
@@ -1235,7 +1248,6 @@ def create_settings_window():
             variable=auto_set_var)
         auto_set_check.pack(anchor=tk.W, pady=(0, 10))
 
-        # ПРЕДУПРЕЖДЕНИЕ (обновлённое)
         warning_label = ttk.Label(hdr_frame, text=t("settings_hdr_autoset_warning"), foreground="orange", wraplength=500)
         warning_label.pack(anchor=tk.W, pady=(0, 5))
 
@@ -1244,7 +1256,10 @@ def create_settings_window():
         preset_entry.insert(0, str(hdr_settings["preset_number"]))
         preset_entry.pack(anchor=tk.W)
 
-        debug_frame = ttk.LabelFrame(main_frame, text=t("settings_debug_group"), padding="10")
+        # -------- Debug настройки (внутри контейнера) --------
+        debug_frame = ttk.LabelFrame(advanced_container, text=t("settings_debug_group"), padding="10")
+        debug_frame.pack(fill=tk.X, pady=(0, 15))
+
         debug_var = tk.BooleanVar(value=debug_enabled)
         debug_check = ttk.Checkbutton(
             debug_frame,
@@ -1254,6 +1269,13 @@ def create_settings_window():
         ttk.Label(debug_frame, text=t("settings_debug_file_label", file=DEBUG_LOG_FILE),
                   foreground="gray").pack(anchor=tk.W)
 
+        def toggle_advanced_container():
+            if advanced_var.get():
+                advanced_container.pack(fill=tk.X, pady=(0, 15), before=language_frame)
+            else:
+                advanced_container.pack_forget()
+
+        # -------- Язык --------
         language_frame = ttk.LabelFrame(main_frame, text=t("settings_language_group"), padding="10")
         language_frame.pack(fill=tk.X, pady=(0, 15))
         language_names = [TRANSLATIONS[code]["lang_name"] for code in SUPPORTED_LANGUAGES]
@@ -1263,16 +1285,9 @@ def create_settings_window():
                                        state="readonly", width=20)
         language_combo.pack(anchor=tk.W)
 
-        def toggle_advanced_visibility():
-            if advanced_var.get():
-                hdr_frame.pack(fill=tk.X, pady=(0, 15), before=language_frame)
-                debug_frame.pack(fill=tk.X, pady=(0, 15), before=language_frame)
-            else:
-                hdr_frame.pack_forget()
-                debug_frame.pack_forget()
+        toggle_advanced_container()
 
-        toggle_advanced_visibility()
-
+        # -------- Горячая клавиша --------
         hotkey_frame = ttk.LabelFrame(main_frame, text=t("settings_hotkey_group"), padding="10")
         hotkey_frame.configure(takefocus=1)
         hotkey_frame.pack(fill=tk.X, pady=(0, 15))
@@ -1390,7 +1405,6 @@ def set_hdr_color_preset():
         log(f"Ошибка: {e}")
 
 def rebuild_tray_menu():
-    """Пересобирает меню трея на новом языке (без перезапуска программы)."""
     global tray_icon
     if tray_icon:
         try:
@@ -1435,7 +1449,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.2.1") + " \n"
+            t("about_version", version="1.3.0") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
