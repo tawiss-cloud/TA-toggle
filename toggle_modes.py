@@ -724,19 +724,35 @@ def apply_mode_by_index(index, force_hdr_check=False):
     if current_mode_index == index:
         return True
 
-    # Если HDR уже был подтверждён ранее в этой же игровой/медиа-сессии и
-    # сессия ещё не сбрасывалась (игра не закрыта, ручного переключения не
-    # было) – не дёргаем DDC/CI повторно, а сразу считаем переключение
-    # заблокированным.
-    if confirmed_hdr_active and not force_hdr_check:
+    # Полносессионный кэш "HDR подтверждён" применяем только когда пытаемся
+    # ВОЙТИ в игровой режим (index == 1) – именно тут повторные попытки идут
+    # раз в секунду, пока игра активна, и именно это давало спам DDC/CI.
+    # Для ВОЗВРАТА в стандартный режим (index == 0) кэш НЕ используем: игра
+    # там уже закрыта, никакого "сессии" больше нет, и если кэшировать
+    # надолго, автоматический возврат в SDR никогда не сработает сам после
+    # того как пользователь выключит HDR – придётся каждый раз жать хоткей.
+    # Для этого направления опрос идёт на обычном такте кэша is_hdr_enabled
+    # (HDR_CACHE_TIME, по умолчанию раз в 2 сек) – это и есть штатное
+    # поведение "подождать, пока HDR не выключат".
+    use_session_cache = (index == 1)
+
+    if use_session_cache and confirmed_hdr_active and not force_hdr_check:
         log("HDR ранее подтверждён в этой сессии – переключение заблокировано (без опроса монитора)")
         return False
+
+    # Запоминаем, что показывала проверка ДО этого вызова (чтобы отличить
+    # "было заблокировано, сейчас нет" от "и раньше было ок") – переменная
+    # ниже будет перезаписана внутри is_hdr_blocked().
+    was_blocking_before = hdr_status_cache in ("hdr", "error")
 
     blocked, hdr_check = is_hdr_blocked(force_refresh=force_hdr_check)
     if blocked:
         if hdr_check == "hdr":
-            confirmed_hdr_active = True
-            log("HDR подтверждён – переключение режимов заблокировано (запомнено до конца сессии)")
+            if use_session_cache:
+                confirmed_hdr_active = True
+                log("HDR подтверждён – переключение режимов заблокировано (запомнено до конца сессии)")
+            else:
+                log("HDR подтверждён – возврат в стандартный режим отложен (проверим ещё раз позже)")
         else:
             log("Ошибка чтения яркости – переключение режимов заблокировано (не запоминается)")
         return False
@@ -747,6 +763,16 @@ def apply_mode_by_index(index, force_hdr_check=False):
     if confirmed_hdr_active:
         confirmed_hdr_active = False
         log("Свежая проверка не подтвердила HDR – запомненное состояние снято")
+
+    if was_blocking_before:
+        # HDR (или ошибка чтения) только что перестал(а) блокировать
+        # переключение – монитор мог ещё не закончить свой внутренний переход
+        # HDR->SDR, и запись VCP-параметров прямо сейчас рискует быть молча
+        # проигнорирована (без исключения, но и без реального эффекта –
+        # именно так один раз "потерялся" Local Dimming). Даём монитору
+        # короткую паузу на стабилизацию.
+        log("HDR/ошибка только что снята – короткая пауза перед записью настроек")
+        time.sleep(0.5)
 
     success_dimming = False
     success_brightness = False
@@ -977,11 +1003,16 @@ def monitor_loop():
                                 game_window_hwnd = hwnd
                                 last_reported_state = True
             else:
+                was_counting_game = game_counter > 0
                 game_counter = max(game_counter - 1, 0)
-                # Сбрасываем запомненный HDR, только когда игра/медиаплеер
-                # действительно перестали определяться (счётчик выбрал
-                # весь запас), а не на каждый одиночный alt-tab.
-                if game_counter == 0:
+                # Сбрасываем запомненный HDR только ОДИН РАЗ – в момент, когда
+                # счётчик впервые дошёл до нуля (это переход, а не уровень).
+                # Раньше условие "game_counter == 0" оставалось истинным на
+                # каждой последующей итерации, пока счётчик стоял на нуле, и
+                # reset_confirmed_hdr() срабатывал каждую секунду – это сводило
+                # на нет весь смысл кэша и снова приводило к опросу DDC/CI
+                # каждую секунду.
+                if was_counting_game and game_counter == 0:
                     reset_confirmed_hdr()
                 with media_timer_lock:
                     if media_timer is not None:
@@ -992,10 +1023,20 @@ def monitor_loop():
                 if game_window_hwnd is not None:
                     if not user32.IsWindow(game_window_hwnd):
                         log("Игра закрыта (окно уничтожено) – возврат стандартного режима")
-                        reset_confirmed_hdr()  # окно закрыто – однозначный конец сессии
+                        reset_confirmed_hdr()  # окно закрыто – гарантированный конец сессии
+                        # Хендл сбрасываем ВСЕГДА, даже если переключение не
+                        # удалось – иначе при блокировке HDR эта ветка будет
+                        # срабатывать каждую секунду до бесконечности (окно уже
+                        # не существует, а не найдёт условие для очистки).
+                        game_window_hwnd = None
                         if apply_mode_by_index(0):
-                            game_window_hwnd = None
                             last_reported_state = False
+                        else:
+                            # Не удалось – передаём эстафету обычной логике
+                            # "игра/медиа не обнаружена" ниже (last_reported_state),
+                            # которая сама аккуратно повторит попытку без
+                            # дублирования этого лога каждую секунду.
+                            last_reported_state = True
                     else:
                         if last_reported_state != True:
                             log("Игра уже запущена (свёрнута) – переключаем на игровой")
@@ -1560,7 +1601,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.3.1") + " \n"
+            t("about_version", version="1.3.2") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
