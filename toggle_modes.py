@@ -322,6 +322,12 @@ hdr_cache_time = 0
 HDR_CACHE_TIME = 2
 hdr_cache_lock = threading.Lock()
 
+# Подтверждённый HDR (именно HDR, не ошибка чтения) запоминается на всю
+# игровую/медиа-сессию, чтобы не долбить DDC/CI каждую секунду.
+# Сбрасывается при закрытии игры/медиаплеера или при ручной попытке
+# переключения режима (хоткей всегда делает force_refresh и сам сбросит флаг).
+confirmed_hdr_active = False
+
 MEDIA_PLAYER_PROCESSES = [
     "mpc-hc.exe", "mpc-be.exe", "mpc-hc64.exe", "mpc-be64.exe",
     "vlc.exe", "potplayer.exe", "kmplayer.exe", "mediaplayerclassic.exe"
@@ -483,13 +489,28 @@ def is_hdr_enabled(force_refresh=False):
                     return "hdr" if current_brightness == 100 else "ok"
                 except Exception as e:
                     log(f"Ошибка чтения яркости: {e}")
-                    return "hdr"
+                    return "error"
             result = safe_monitor_operation(check_hdr)
             if result is None:
-                result = "hdr"
+                result = "error"
             hdr_status_cache = result
             hdr_cache_time = now
         return hdr_status_cache
+
+def is_hdr_blocked(force_refresh=False):
+    """Возвращает True, если переключение режима должно быть заблокировано:
+    либо подтверждён HDR (значение "hdr"), либо не удалось прочитать
+    яркость (значение "error"). В обоих случаях итог для вызывающего кода
+    одинаковый (блокировка), но кэшировать на всю сессию можно только
+    подтверждённый HDR — ошибка чтения не является подтверждением."""
+    result = is_hdr_enabled(force_refresh=force_refresh)
+    return result in ("hdr", "error"), result
+
+def reset_confirmed_hdr():
+    global confirmed_hdr_active
+    if confirmed_hdr_active:
+        log("Сброс запомненного состояния HDR")
+    confirmed_hdr_active = False
 
 def show_notification(message):
     def create_notification():
@@ -701,11 +722,25 @@ def retry_dimming_only(mode_index, attempts=5, delay=0.5):
 
 def apply_mode_by_index(index, force_hdr_check=False):
     global current_mode_index, tray_icon, last_excluded_process_logged
+    global confirmed_hdr_active
     if current_mode_index == index:
         return True
-    hdr_check = is_hdr_enabled(force_refresh=force_hdr_check)
-    if hdr_check == "hdr":
-        log("HDR включен или ошибка чтения – переключение режимов заблокировано")
+
+    # Если HDR уже был подтверждён ранее в этой же игровой/медиа-сессии и
+    # сессия ещё не сбрасывалась (игра не закрыта, ручного переключения не
+    # было) – не дёргаем DDC/CI повторно, а сразу считаем переключение
+    # заблокированным.
+    if confirmed_hdr_active and not force_hdr_check:
+        log("HDR ранее подтверждён в этой сессии – переключение заблокировано (без опроса монитора)")
+        return False
+
+    blocked, hdr_check = is_hdr_blocked(force_refresh=force_hdr_check)
+    if blocked:
+        if hdr_check == "hdr":
+            confirmed_hdr_active = True
+            log("HDR подтверждён – переключение режимов заблокировано (запомнено до конца сессии)")
+        else:
+            log("Ошибка чтения яркости – переключение режимов заблокировано (не запоминается)")
         return False
 
     success_dimming = False
@@ -809,12 +844,19 @@ def is_game_window(hwnd):
     return is_game
 
 def delayed_media_switch(hwnd):
-    global media_timer, game_window_hwnd, last_reported_state
+    global media_timer, game_window_hwnd, last_reported_state, confirmed_hdr_active
     with media_timer_lock:
         media_timer = None
-    hdr_check = is_hdr_enabled()
-    if hdr_check == "hdr":
-        log("HDR включен или ошибка – переключение медиаплеера отменено")
+    if confirmed_hdr_active:
+        log("HDR ранее подтверждён в этой сессии – переключение медиаплеера отменено (без опроса монитора)")
+        return
+    blocked, hdr_check = is_hdr_blocked()
+    if blocked:
+        if hdr_check == "hdr":
+            confirmed_hdr_active = True
+            log("HDR подтверждён – переключение медиаплеера отменено (запомнено до конца сессии)")
+        else:
+            log("Ошибка чтения яркости – переключение медиаплеера отменено")
         return
     if not user32.IsWindow(hwnd):
         log("Медиаплеер закрыт до срабатывания таймера – отмена")
@@ -822,9 +864,13 @@ def delayed_media_switch(hwnd):
     if not is_game_window(hwnd):
         log("Окно перестало быть медиаплеером за время задержки – отмена")
         return
-    hdr_check = is_hdr_enabled(force_refresh=True)
-    if hdr_check == "hdr":
-        log("HDR включился перед финальным переключением – отмена")
+    blocked, hdr_check = is_hdr_blocked(force_refresh=True)
+    if blocked:
+        if hdr_check == "hdr":
+            confirmed_hdr_active = True
+            log("HDR включился перед финальным переключением – отмена (запомнено до конца сессии)")
+        else:
+            log("Ошибка чтения яркости перед финальным переключением – отмена")
         return
     if current_mode_index != 1:
         log(f"Медиаплеер подтверждён через {media_delay_seconds} сек – переключение на игровой режим")
@@ -840,6 +886,7 @@ def monitor_loop():
     global current_mode_index, stop_hotkey_thread, game_counter, game_window_hwnd
     global auto_switch_enabled, media_timer, media_delay_seconds, last_reported_state
     global manual_override_active, manual_override_mode, manual_override_waiting
+    global confirmed_hdr_active
 
     while not stop_hotkey_thread:
         try:
@@ -868,6 +915,7 @@ def monitor_loop():
                         game_window_hwnd = None
                         last_reported_state = None
                         game_counter = 0
+                        reset_confirmed_hdr()
                         if current_mode_index != 0:
                             apply_mode_by_index(0)
                         time.sleep(1)
@@ -894,10 +942,16 @@ def monitor_loop():
                     if game_counter >= GAME_THRESHOLD:
                         if game_window_hwnd == hwnd and last_reported_state == True:
                             pass
+                        elif confirmed_hdr_active:
+                            pass  # HDR уже подтверждён в этой сессии – не опрашиваем монитор повторно
                         else:
-                            hdr_check = is_hdr_enabled()
-                            if hdr_check == "hdr":
-                                log("HDR включен или ошибка – медиаплеер не активирует игровой режим")
+                            blocked, hdr_check = is_hdr_blocked()
+                            if blocked:
+                                if hdr_check == "hdr":
+                                    confirmed_hdr_active = True
+                                    log("HDR подтверждён – медиаплеер не активирует игровой режим (запомнено до конца сессии)")
+                                else:
+                                    log("Ошибка чтения яркости – медиаплеер не активирует игровой режим")
                             else:
                                 with media_timer_lock:
                                     if media_timer is None:
@@ -919,6 +973,11 @@ def monitor_loop():
                                 last_reported_state = True
             else:
                 game_counter = max(game_counter - 1, 0)
+                # Сбрасываем запомненный HDR, только когда игра/медиаплеер
+                # действительно перестали определяться (счётчик выбрал
+                # весь запас), а не на каждый одиночный alt-tab.
+                if game_counter == 0:
+                    reset_confirmed_hdr()
                 with media_timer_lock:
                     if media_timer is not None:
                         media_timer.cancel()
@@ -928,6 +987,7 @@ def monitor_loop():
                 if game_window_hwnd is not None:
                     if not user32.IsWindow(game_window_hwnd):
                         log("Игра закрыта (окно уничтожено) – возврат стандартного режима")
+                        reset_confirmed_hdr()  # окно закрыто – однозначный конец сессии
                         if apply_mode_by_index(0):
                             game_window_hwnd = None
                             last_reported_state = False
@@ -954,7 +1014,7 @@ def monitor_loop():
 def toggle_mode(icon=None):
     global current_mode_index, last_switch_time, last_reported_state
     global manual_override_active, manual_override_mode, manual_override_waiting
-    global game_window_hwnd, game_counter
+    global game_window_hwnd, game_counter, confirmed_hdr_active
     
     now = time.time()
     if now - last_switch_time < DELAY:
@@ -963,10 +1023,14 @@ def toggle_mode(icon=None):
     try:
         log("\n" + "="*50)
         log("Начало переключения режима")
-        
-        hdr_check_result = is_hdr_enabled(force_refresh=True)
-        if hdr_check_result == "hdr":
-            log("HDR включен или ошибка - переключение заблокировано")
+
+        # Ручная попытка переключения – всегда делаем свежий опрос монитора
+        # и пересматриваем запомненное состояние HDR по его результату,
+        # независимо от того, что было запомнено ранее в этой сессии.
+        blocked, hdr_check_result = is_hdr_blocked(force_refresh=True)
+        confirmed_hdr_active = (hdr_check_result == "hdr")
+        if blocked:
+            log("HDR включен или ошибка чтения - переключение заблокировано (ручная попытка)")
             show_notification(t("notif_hdr_enabled"))
             return
         
@@ -1102,8 +1166,8 @@ def create_settings_window():
 
                 if save_settings():
                     show_notification(t("notif_settings_saved"))
-                    hdr_check = is_hdr_enabled(force_refresh=True)
-                    if hdr_check != "hdr":
+                    blocked, hdr_check = is_hdr_blocked(force_refresh=True)
+                    if not blocked:
                         apply_mode_settings(current_mode_index)
 
                 if language_changed:
@@ -1414,11 +1478,15 @@ def create_settings_window():
     tk_queue.put(('window', create_window))
 
 def set_hdr_color_preset():
+    global confirmed_hdr_active
     try:
         log("Проверка HDR для пресета...")
         hdr_check_result = is_hdr_enabled(force_refresh=True)
+        # Это тоже ручное действие (хоткей) – обновляем запомненное состояние
+        # по свежему результату.
+        confirmed_hdr_active = (hdr_check_result == "hdr")
         if hdr_check_result != "hdr":
-            log("HDR не включен")
+            log("HDR не включен (или ошибка чтения – не подтверждено, пресет не трогаем)")
             return
         if not (advanced_settings_enabled and hdr_settings["auto_set_preset"]):
             log("Автоустановка пресета отключена (или скрыта в дополнительных настройках)")
