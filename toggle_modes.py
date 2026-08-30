@@ -258,7 +258,6 @@ pending_hotkey_mod = HOTKEY_MODIFIERS
 pending_hotkey_vk = HOTKEY_VK
 
 WS_CAPTION = 0x00C00000
-WS_THICKFRAME = 0x00040000
 WS_POPUP = 0x80000000
 GWL_STYLE = -16
 
@@ -286,7 +285,6 @@ DELAY = 1
 
 # Ручной режим
 manual_override_active = False
-manual_override_mode = 0
 manual_override_waiting = False
 
 modes = []
@@ -743,6 +741,13 @@ def apply_mode_by_index(index, force_hdr_check=False):
             log("Ошибка чтения яркости – переключение режимов заблокировано (не запоминается)")
         return False
 
+    # Свежая проверка (обычно force_hdr_check=True) подтвердила, что HDR не
+    # активен – если флаг оставался True с прошлого раза, снимаем его, иначе
+    # он "залипнет" и будет блокировать следующие попытки без опроса монитора.
+    if confirmed_hdr_active:
+        confirmed_hdr_active = False
+        log("Свежая проверка не подтвердила HDR – запомненное состояние снято")
+
     success_dimming = False
     success_brightness = False
     for attempt in range(3):
@@ -885,7 +890,7 @@ def delayed_media_switch(hwnd):
 def monitor_loop():
     global current_mode_index, stop_hotkey_thread, game_counter, game_window_hwnd
     global auto_switch_enabled, media_timer, media_delay_seconds, last_reported_state
-    global manual_override_active, manual_override_mode, manual_override_waiting
+    global manual_override_active, manual_override_waiting
     global confirmed_hdr_active
 
     while not stop_hotkey_thread:
@@ -1013,7 +1018,7 @@ def monitor_loop():
 # ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ toggle_mode ==========
 def toggle_mode(icon=None):
     global current_mode_index, last_switch_time, last_reported_state
-    global manual_override_active, manual_override_mode, manual_override_waiting
+    global manual_override_active, manual_override_waiting
     global game_window_hwnd, game_counter, confirmed_hdr_active
     
     now = time.time()
@@ -1051,7 +1056,6 @@ def toggle_mode(icon=None):
                 if active_hwnd and is_game_window(active_hwnd):
                     # Игра активна – включаем ручной режим с целевым стандартным и запоминаем окно
                     manual_override_active = True
-                    manual_override_mode = 0
                     game_window_hwnd = active_hwnd
                     manual_override_waiting = False
                     last_reported_state = False
@@ -1066,7 +1070,6 @@ def toggle_mode(icon=None):
             else:  # new_mode_index == 1
                 # Ручное переключение на игровой
                 manual_override_active = True
-                manual_override_mode = 1
                 log(f"Ручной режим включён, целевой режим: {mode_name}")
                 
                 active_hwnd = user32.GetForegroundWindow()
