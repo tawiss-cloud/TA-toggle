@@ -315,6 +315,7 @@ game_window_hwnd = None
 media_timer = None
 media_timer_lock = threading.Lock()
 last_reported_state = None
+last_excluded_process_logged = None  # чтобы не спамить лог одним и тем же исключённым процессом
 
 hdr_status_cache = None
 hdr_cache_time = 0
@@ -648,7 +649,12 @@ def apply_mode_settings(mode_index):
         log("safe_monitor_operation вернула None")
         return False, False, False
     success_dimming, success_brightness = result
-    return (success_dimming or success_brightness), success_dimming, success_brightness
+    # ВАЖНО: режим считается полностью применённым, только если ОБА параметра
+    # (яркость и локальное затемнение) реально выставлены. Раньше здесь было
+    # "or", из-за чего частичный успех (например, только яркость) засчитывался
+    # как полное применение режима, а local dimming мог молча остаться от
+    # предыдущего режима без каких-либо дальнейших попыток его исправить.
+    return (success_dimming and success_brightness), success_dimming, success_brightness
 
 def retry_brightness_only(mode_index, attempts=5, delay=0.5):
     mode = modes[mode_index]
@@ -674,34 +680,65 @@ def retry_brightness_only(mode_index, attempts=5, delay=0.5):
             return
     log("Не удалось дожать яркость после дополнительных попыток")
 
+def retry_dimming_only(mode_index, attempts=5, delay=0.5):
+    mode = modes[mode_index]
+    for attempt in range(attempts):
+        time.sleep(delay)
+        if current_mode_index != mode_index:
+            log("Дожим LD отменён: режим уже изменился")
+            return
+        # Проверяем текущее значение local dimming
+        _, current_local_dimming = get_current_monitor_settings()
+        if current_local_dimming is not None and current_local_dimming == mode["local_dimming"]:
+            log(f"LD уже {mode['local_dimming']}, дожим не требуется")
+            return
+        def set_dimming(monitor):
+            return set_local_dimming(monitor, mode["local_dimming"])
+        if safe_monitor_operation(set_dimming):
+            log(f"LD {mode['local_dimming']} дожат успешно (попытка {attempt+1}/{attempts})")
+            return
+    log("Не удалось дожать LD после дополнительных попыток")
+
 def apply_mode_by_index(index, force_hdr_check=False):
-    global current_mode_index, tray_icon
+    global current_mode_index, tray_icon, last_excluded_process_logged
     if current_mode_index == index:
         return True
     hdr_check = is_hdr_enabled(force_refresh=force_hdr_check)
     if hdr_check == "hdr":
         log("HDR включен или ошибка чтения – переключение режимов заблокировано")
         return False
+
+    success_dimming = False
+    success_brightness = False
     for attempt in range(3):
         log(f"Попытка переключения на режим {index} (шаг {attempt+1}/3)")
         apply_success, success_dimming, success_brightness = apply_mode_settings(index)
         if apply_success:
-            current_mode_index = index
-            if not success_brightness:
-                threading.Thread(target=retry_brightness_only, args=(index,), daemon=True).start()
-            if tray_icon:
-                try:
-                    tray_icon.title = t("tray_title", mode=modes[current_mode_index]['name'])
-                except:
-                    pass
-            show_notification(t("notif_mode", mode=modes[current_mode_index]['name']))
-            return True
-        else:
-            log(f"Не удалось применить режим {index}, попытка {attempt+1}/3")
-            if attempt < 2:
-                time.sleep(1)
-    log(f"Не удалось переключить на режим {index} после 3 попыток")
-    return False
+            break
+        log(f"Режим {index} применён не полностью (LD={success_dimming}, яркость={success_brightness}), попытка {attempt+1}/3")
+        if attempt < 2:
+            time.sleep(1)
+
+    if not success_dimming and not success_brightness:
+        log(f"Не удалось переключить на режим {index} после 3 попыток")
+        return False
+
+    # Хотя бы один из параметров (яркость или LD) выставлен успешно.
+    # Считаем режим применённым, а недостающий параметр дожимаем в фоне,
+    # чтобы он не "залипал" на значении от предыдущего режима.
+    current_mode_index = index
+    last_excluded_process_logged = None  # после смены режима разрешаем залогировать исключённый процесс заново
+    if not success_brightness:
+        threading.Thread(target=retry_brightness_only, args=(index,), daemon=True).start()
+    if not success_dimming:
+        threading.Thread(target=retry_dimming_only, args=(index,), daemon=True).start()
+    if tray_icon:
+        try:
+            tray_icon.title = t("tray_title", mode=modes[current_mode_index]['name'])
+        except:
+            pass
+    show_notification(t("notif_mode", mode=modes[current_mode_index]['name']))
+    return True
 
 def get_process_name(hwnd):
     try:
@@ -725,6 +762,7 @@ def get_process_name(hwnd):
         return None
 
 def is_game_window(hwnd):
+    global last_excluded_process_logged
     if not hwnd:
         return False
     rect = RECT()
@@ -758,7 +796,9 @@ def is_game_window(hwnd):
     process_name = get_process_name(hwnd)
     if process_name:
         if process_name.lower() in [p.lower() for p in EXCLUDED_PROCESSES]:
-            log(f"Исключён процесс {process_name}")
+            if process_name != last_excluded_process_logged:
+                log(f"Исключён процесс {process_name}")
+                last_excluded_process_logged = process_name
             return False
     if not is_game and media_players_enabled:
         if process_name and process_name.lower() in [m.lower() for m in MEDIA_PLAYER_PROCESSES]:
@@ -1449,7 +1489,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.3.0") + " \n"
+            t("about_version", version="1.3.1") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
