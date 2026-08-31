@@ -338,6 +338,17 @@ hdr_cache_lock = threading.Lock()
 # переключения режима (хоткей всегда делает force_refresh и сам сбросит флаг).
 confirmed_hdr_active = False
 
+# Гейт для сообщения "Обнаружена игра (подтверждено)..." в логе – чтобы оно
+# писалось один раз за попытку, а не каждую секунду, пока переключение
+# заблокировано (например, HDR-ом). Сбрасывается при успешном переключении
+# и при сбросе сессии (см. reset_confirmed_hdr()).
+game_switch_attempt_logged = False
+
+# Последний медиаплеер, для которого уже выводили в лог "Медиаплеер X –
+# игровой режим" – чтобы не дублировать эту строку каждую секунду, пока
+# окно медиаплеера остаётся активным на весь экран.
+last_media_player_logged = None
+
 MEDIA_PLAYER_PROCESSES = [
     "mpc-hc.exe", "mpc-be.exe", "mpc-hc64.exe", "mpc-be64.exe",
     "vlc.exe", "potplayer.exe", "kmplayer.exe", "mediaplayerclassic.exe"
@@ -755,7 +766,10 @@ def apply_mode_by_index(index, force_hdr_check=False):
     use_session_cache = (index == 1)
 
     if use_session_cache and confirmed_hdr_active and not force_hdr_check:
-        log("HDR ранее подтверждён в этой сессии – переключение заблокировано (без опроса монитора)")
+        # Не логируем каждый раз – причина блокировки уже была записана один
+        # раз в момент, когда HDR подтвердился (см. ниже, "запомнено до конца
+        # сессии"). Повторение этой строки каждую секунду ничего нового не
+        # сообщает, а раздувает лог на тысячи одинаковых строк за сессию.
         return False
 
     # Запоминаем, что показывала проверка ДО этого вызова (чтобы отличить
@@ -846,7 +860,7 @@ def get_process_name(hwnd):
         return None
 
 def is_game_window(hwnd):
-    global last_excluded_process_logged
+    global last_excluded_process_logged, last_media_player_logged
     if not hwnd:
         return False
     rect = RECT()
@@ -888,8 +902,13 @@ def is_game_window(hwnd):
         if process_name and process_name.lower() in [m.lower() for m in MEDIA_PLAYER_PROCESSES]:
             media_covers = (width_ratio >= 0.70 and height_ratio >= 0.70)
             if media_covers:
-                log(f"Медиаплеер {process_name} – игровой режим")
+                # Логируем только при смене медиаплеера, а не на каждой
+                # секунде, пока то же самое окно остаётся на весь экран.
+                if process_name != last_media_player_logged:
+                    log(f"Медиаплеер {process_name} – игровой режим")
+                    last_media_player_logged = process_name
                 return True
+    last_media_player_logged = None
     return is_game
 
 def delayed_media_switch(hwnd):
@@ -940,7 +959,7 @@ def monitor_loop():
     global current_mode_index, stop_hotkey_thread, game_counter, game_window_hwnd
     global auto_switch_enabled, media_timer, media_delay_seconds, last_reported_state
     global manual_override_active, manual_override_waiting
-    global confirmed_hdr_active
+    global confirmed_hdr_active, game_switch_attempt_logged
 
     while not stop_hotkey_thread:
         lock_held = False  # True только пока ИМЕННО ЭТА итерация держит game_state_lock
@@ -979,6 +998,7 @@ def monitor_loop():
                         last_reported_state = None
                         game_counter = 0
                         reset_confirmed_hdr()
+                        game_switch_attempt_logged = False
                         if current_mode_index != 0:
                             apply_mode_by_index(0)
                         game_state_lock.release()
@@ -1034,10 +1054,16 @@ def monitor_loop():
                             log("Обнаружена игра – таймер медиа отменён")
                     if game_counter >= GAME_THRESHOLD:
                         if last_reported_state != True:
-                            log("Обнаружена игра (подтверждено) – переключение на игровой режим")
+                            # Логируем попытку только один раз, пока не сменится
+                            # ситуация – иначе, пока переключение заблокировано
+                            # (HDR), эта строка пишется каждую секунду часами.
+                            if not game_switch_attempt_logged:
+                                log("Обнаружена игра (подтверждено) – переключение на игровой режим")
+                                game_switch_attempt_logged = True
                             if apply_mode_by_index(1):
                                 game_window_hwnd = hwnd
                                 last_reported_state = True
+                                game_switch_attempt_logged = False
             else:
                 was_counting_game = game_counter > 0
                 game_counter = max(game_counter - 1, 0)
@@ -1050,6 +1076,7 @@ def monitor_loop():
                 # каждую секунду.
                 if was_counting_game and game_counter == 0:
                     reset_confirmed_hdr()
+                    game_switch_attempt_logged = False
                 with media_timer_lock:
                     if media_timer is not None:
                         media_timer.cancel()
@@ -1060,6 +1087,7 @@ def monitor_loop():
                     if not user32.IsWindow(game_window_hwnd):
                         log("Игра закрыта (окно уничтожено) – возврат стандартного режима")
                         reset_confirmed_hdr()  # окно закрыто – гарантированный конец сессии
+                        game_switch_attempt_logged = False
                         # Хендл сбрасываем ВСЕГДА, даже если переключение не
                         # удалось – иначе при блокировке HDR эта ветка будет
                         # срабатывать каждую секунду до бесконечности (окно уже
