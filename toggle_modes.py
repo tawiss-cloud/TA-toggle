@@ -332,6 +332,28 @@ hdr_cache_time = 0
 HDR_CACHE_TIME = 2
 hdr_cache_lock = threading.Lock()
 
+# Направление "возврат в стандартный режим" (index==0) не кэшируется по
+# сессии (см. ниже) – это значит, что пока переключение заблокировано, оно
+# реально опрашивает монитор каждые HDR_CACHE_TIME секунд, бесконечно, а не
+# один раз за сессию. Раз в 2 сек этого достаточно для отклика (пользователь
+# не заметит разницы между 2 и 10 секундами), но не для нагрузки на шину при
+# долгой блокировке. STANDARD_RETURN_RETRY_INTERVAL троттлит именно частоту
+# повторных попыток в monitor_loop – HDR_CACHE_TIME не трогаем, он общий для
+# других вызовов (первая проверка при входе в игру/медиа, где важна быстрая
+# реакция).
+STANDARD_RETURN_RETRY_INTERVAL = 10
+standard_return_last_attempt_time = 0.0
+
+# Явный флаг "мы всё ещё должны вернуть SDR, но пока не смогли" – отдельно
+# от last_reported_state. last_reported_state отражает факт "идёт ли сейчас
+# игра/медиа" (False сразу после закрытия окна, независимо от того, удалось
+# ли применить SDR); standard_restore_pending – отдельно, "остался ли долг
+# на повторную попытку". Раньше это совмещалось через last_reported_state=True
+# без game_window_hwnd – работало, но было неявным (могло сломаться, если
+# где-то ещё начать читать last_reported_state как "идёт игра" без проверки
+# game_window_hwnd).
+standard_restore_pending = False
+
 # Подтверждённый HDR кэшируется не по времени, а по конкретному окну:
 # confirmed_hdr_active=True действует, только пока hdr_confirmed_for_hwnd
 # указывает на то же самое, ещё существующее окно. Другое окно (новая игра,
@@ -998,7 +1020,8 @@ def monitor_loop():
     global auto_switch_enabled, media_timer, media_delay_seconds, last_reported_state
     global manual_override_active, manual_override_waiting
     global confirmed_hdr_active, hdr_confirmed_for_hwnd, game_switch_attempt_logged, game_switch_attempt_hwnd
-    global standard_return_attempt_logged, standard_return_blocked_logged
+    global standard_return_attempt_logged, standard_return_blocked_logged, standard_return_last_attempt_time
+    global standard_restore_pending
 
     while not stop_hotkey_thread:
         lock_held = False  # True только пока ИМЕННО ЭТА итерация держит game_state_lock
@@ -1068,6 +1091,8 @@ def monitor_loop():
                 # вернуться в стандартный режим, сбрасываем гейты этого лога.
                 standard_return_attempt_logged = False
                 standard_return_blocked_logged = False
+                standard_return_last_attempt_time = 0.0
+                standard_restore_pending = False
 
                 if is_media:
                     if game_counter >= GAME_THRESHOLD:
@@ -1124,21 +1149,28 @@ def monitor_loop():
                         reset_confirmed_hdr()
                         game_switch_attempt_logged = False
                         game_switch_attempt_hwnd = None
-                        # Хендл сбрасываем ВСЕГДА, даже если переключение не
-                        # удалось – иначе при блокировке HDR эта ветка будет
-                        # срабатывать каждую секунду до бесконечности (окно уже
-                        # не существует, а не найдёт условие для очистки).
+                        # Хендл сбрасываем ВСЕГДА – иначе при блокировке HDR
+                        # эта ветка будет срабатывать каждую секунду до
+                        # бесконечности (окно уже не существует, а не найдёт
+                        # условие для очистки).
                         game_window_hwnd = None
+                        # Игра точно закрыта – это факт, который не зависит от
+                        # того, удастся ли прямо сейчас применить SDR (может
+                        # мешать HDR). last_reported_state отражает именно
+                        # "идёт ли игра", а не "выполнен ли ещё долг по
+                        # переключению" – для долга ниже отдельный флаг.
+                        last_reported_state = False
                         if apply_mode_by_index(0):
-                            last_reported_state = False
                             standard_return_attempt_logged = False
                             standard_return_blocked_logged = False
+                            standard_return_last_attempt_time = 0.0
+                            standard_restore_pending = False
                         else:
-                            # Не удалось – передаём эстафету обычной логике
-                            # "игра/медиа не обнаружена" ниже (last_reported_state),
-                            # которая сама аккуратно повторит попытку без
-                            # дублирования этого лога каждую секунду.
-                            last_reported_state = True
+                            # Не удалось – остаётся долг вернуть SDR. Обычная
+                            # логика "игра/медиа не обнаружена" ниже сама
+                            # аккуратно повторит попытку по standard_restore_pending,
+                            # с троттлингом, без дублирования лога каждую секунду.
+                            standard_restore_pending = True
                     else:
                         if last_reported_state != True:
                             log("Игра уже запущена (свёрнута) – переключаем на игровой")
@@ -1148,7 +1180,7 @@ def monitor_loop():
                     if last_reported_state is None:
                         log("Игра/медиаплеер не обнаружена – состояние стандартное (без переключения)")
                         last_reported_state = False
-                    elif last_reported_state != False:
+                    if standard_restore_pending:
                         # Логируем попытку только один раз, пока не сменится
                         # ситуация – иначе, пока переключение заблокировано
                         # (HDR/ошибка чтения), эта строка пишется каждую
@@ -1157,10 +1189,21 @@ def monitor_loop():
                         if not standard_return_attempt_logged:
                             log("Игра/медиаплеер не обнаружена – возврат стандартного режима")
                             standard_return_attempt_logged = True
-                        if apply_mode_by_index(0):
-                            last_reported_state = False
-                            standard_return_attempt_logged = False
-                            standard_return_blocked_logged = False
+                        # Сам вызов (а значит и реальный опрос монитора внутри
+                        # него) троттлим отдельно от лога – иначе, даже с
+                        # приглушённым логом, DDC/CI всё равно опрашивался бы
+                        # каждые ~HDR_CACHE_TIME секунд бесконечно. Первая
+                        # попытка в новом эпизоде срабатывает сразу
+                        # (standard_return_last_attempt_time сброшен в 0 при
+                        # входе в этот эпизод).
+                        now_ts = time.time()
+                        if now_ts - standard_return_last_attempt_time >= STANDARD_RETURN_RETRY_INTERVAL:
+                            standard_return_last_attempt_time = now_ts
+                            if apply_mode_by_index(0):
+                                standard_restore_pending = False
+                                standard_return_attempt_logged = False
+                                standard_return_blocked_logged = False
+                                standard_return_last_attempt_time = 0.0
 
             game_state_lock.release()
             lock_held = False
@@ -1182,7 +1225,8 @@ def toggle_mode(icon=None):
     global current_mode_index, last_switch_time, last_reported_state
     global manual_override_active, manual_override_waiting
     global game_window_hwnd, game_counter, confirmed_hdr_active, hdr_confirmed_for_hwnd
-    global standard_return_attempt_logged, standard_return_blocked_logged
+    global standard_return_attempt_logged, standard_return_blocked_logged, standard_return_last_attempt_time
+    global standard_restore_pending
     
     now = time.time()
     if now - last_switch_time < DELAY:
@@ -1205,6 +1249,8 @@ def toggle_mode(icon=None):
             hdr_confirmed_for_hwnd = None
             standard_return_attempt_logged = False
             standard_return_blocked_logged = False
+            standard_return_last_attempt_time = 0.0
+            standard_restore_pending = False
             if blocked:
                 log("HDR включен или ошибка чтения - переключение заблокировано (ручная попытка)")
                 show_notification(t("notif_hdr_enabled"))
@@ -1653,7 +1699,8 @@ def create_settings_window():
 
 def set_hdr_color_preset():
     global confirmed_hdr_active, hdr_confirmed_for_hwnd
-    global standard_return_attempt_logged, standard_return_blocked_logged
+    global standard_return_attempt_logged, standard_return_blocked_logged, standard_return_last_attempt_time
+    global standard_restore_pending
     try:
         log("Проверка HDR для пресета...")
         # Другой поток (хоткей) – тот же game_state_lock, что и monitor_loop().
@@ -1666,6 +1713,8 @@ def set_hdr_color_preset():
             hdr_confirmed_for_hwnd = None
             standard_return_attempt_logged = False
             standard_return_blocked_logged = False
+            standard_return_last_attempt_time = 0.0
+            standard_restore_pending = False
             if hdr_check_result != "hdr":
                 log("HDR не включен (или ошибка чтения – не подтверждено, пресет не трогаем)")
                 return
