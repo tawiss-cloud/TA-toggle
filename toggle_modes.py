@@ -347,6 +347,17 @@ hdr_confirmed_for_hwnd = None
 game_switch_attempt_logged = False
 game_switch_attempt_hwnd = None
 
+# То же самое, но для ОБРАТНОГО направления – попытки вернуться в
+# стандартный режим (index==0). Для него сессионный кэш HDR намеренно не
+# используется (см. apply_mode_by_index) – чтобы автовозврат срабатывал сам,
+# как только выключат HDR, а не сидел в кэше до закрытия окна. Но без этого
+# гейта то же сообщение о блокировке пишется каждую секунду, пока HDR не
+# выключат. standard_return_attempt_logged гейтит внешний лог в
+# monitor_loop, standard_return_blocked_logged – внутренний, в самой
+# apply_mode_by_index (причина блокировки: HDR или ошибка чтения).
+standard_return_attempt_logged = False
+standard_return_blocked_logged = False
+
 # Последний медиаплеер, для которого уже выводили в лог "Медиаплеер X –
 # игровой режим" – чтобы не дублировать при каждой итерации.
 last_media_player_logged = None
@@ -774,7 +785,7 @@ def retry_dimming_only(mode_index, attempts=5, delay=0.5):
 
 def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
     global current_mode_index, tray_icon, last_excluded_process_logged
-    global confirmed_hdr_active, hdr_confirmed_for_hwnd
+    global confirmed_hdr_active, hdr_confirmed_for_hwnd, standard_return_blocked_logged
     if current_mode_index == index:
         return True
 
@@ -804,10 +815,13 @@ def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
                 confirmed_hdr_active = True
                 hdr_confirmed_for_hwnd = hwnd
                 log("HDR подтверждён – переключение режимов заблокировано (запомнено для этого окна)")
-            else:
+            elif not standard_return_blocked_logged:
                 log("HDR подтверждён – возврат в стандартный режим отложен (проверим ещё раз позже)")
-        else:
+                standard_return_blocked_logged = True
+        elif use_session_cache or not standard_return_blocked_logged:
             log("Ошибка чтения яркости – переключение режимов заблокировано (не запоминается)")
+            if not use_session_cache:
+                standard_return_blocked_logged = True
         return False
 
     # Свежая проверка подтвердила, что HDR не активен – если флаг оставался
@@ -816,6 +830,8 @@ def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
         confirmed_hdr_active = False
         hdr_confirmed_for_hwnd = None
         log("Свежая проверка не подтвердила HDR – запомненное состояние снято")
+    if standard_return_blocked_logged:
+        standard_return_blocked_logged = False
 
     if was_blocking_before:
         # HDR (или ошибка чтения) только что перестал(а) блокировать
@@ -982,6 +998,7 @@ def monitor_loop():
     global auto_switch_enabled, media_timer, media_delay_seconds, last_reported_state
     global manual_override_active, manual_override_waiting
     global confirmed_hdr_active, hdr_confirmed_for_hwnd, game_switch_attempt_logged, game_switch_attempt_hwnd
+    global standard_return_attempt_logged, standard_return_blocked_logged
 
     while not stop_hotkey_thread:
         lock_held = False  # True только пока ИМЕННО ЭТА итерация держит game_state_lock
@@ -1047,6 +1064,10 @@ def monitor_loop():
 
             if is_game:
                 game_counter = min(game_counter + 1, GAME_THRESHOLD + 1)
+                # Обнаружена игра/медиа – мы больше не "застряли" в попытках
+                # вернуться в стандартный режим, сбрасываем гейты этого лога.
+                standard_return_attempt_logged = False
+                standard_return_blocked_logged = False
 
                 if is_media:
                     if game_counter >= GAME_THRESHOLD:
@@ -1110,6 +1131,8 @@ def monitor_loop():
                         game_window_hwnd = None
                         if apply_mode_by_index(0):
                             last_reported_state = False
+                            standard_return_attempt_logged = False
+                            standard_return_blocked_logged = False
                         else:
                             # Не удалось – передаём эстафету обычной логике
                             # "игра/медиа не обнаружена" ниже (last_reported_state),
@@ -1126,9 +1149,18 @@ def monitor_loop():
                         log("Игра/медиаплеер не обнаружена – состояние стандартное (без переключения)")
                         last_reported_state = False
                     elif last_reported_state != False:
-                        log("Игра/медиаплеер не обнаружена – возврат стандартного режима")
+                        # Логируем попытку только один раз, пока не сменится
+                        # ситуация – иначе, пока переключение заблокировано
+                        # (HDR/ошибка чтения), эта строка пишется каждую
+                        # секунду, потенциально часами (этот путь намеренно
+                        # не использует сессионный кэш – см. apply_mode_by_index).
+                        if not standard_return_attempt_logged:
+                            log("Игра/медиаплеер не обнаружена – возврат стандартного режима")
+                            standard_return_attempt_logged = True
                         if apply_mode_by_index(0):
                             last_reported_state = False
+                            standard_return_attempt_logged = False
+                            standard_return_blocked_logged = False
 
             game_state_lock.release()
             lock_held = False
@@ -1150,6 +1182,7 @@ def toggle_mode(icon=None):
     global current_mode_index, last_switch_time, last_reported_state
     global manual_override_active, manual_override_waiting
     global game_window_hwnd, game_counter, confirmed_hdr_active, hdr_confirmed_for_hwnd
+    global standard_return_attempt_logged, standard_return_blocked_logged
     
     now = time.time()
     if now - last_switch_time < DELAY:
@@ -1170,6 +1203,8 @@ def toggle_mode(icon=None):
             # hwnd от прошлой auto-сессии привязанным к этому флагу).
             confirmed_hdr_active = (hdr_check_result == "hdr")
             hdr_confirmed_for_hwnd = None
+            standard_return_attempt_logged = False
+            standard_return_blocked_logged = False
             if blocked:
                 log("HDR включен или ошибка чтения - переключение заблокировано (ручная попытка)")
                 show_notification(t("notif_hdr_enabled"))
@@ -1618,6 +1653,7 @@ def create_settings_window():
 
 def set_hdr_color_preset():
     global confirmed_hdr_active, hdr_confirmed_for_hwnd
+    global standard_return_attempt_logged, standard_return_blocked_logged
     try:
         log("Проверка HDR для пресета...")
         # Другой поток (хоткей) – тот же game_state_lock, что и monitor_loop().
@@ -1628,6 +1664,8 @@ def set_hdr_color_preset():
             # сбрасываем hdr_confirmed_for_hwnd (см. toggle_mode).
             confirmed_hdr_active = (hdr_check_result == "hdr")
             hdr_confirmed_for_hwnd = None
+            standard_return_attempt_logged = False
+            standard_return_blocked_logged = False
             if hdr_check_result != "hdr":
                 log("HDR не включен (или ошибка чтения – не подтверждено, пресет не трогаем)")
                 return
@@ -1700,7 +1738,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.3.3") + " \n"
+            t("about_version", version="1.3.2") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
