@@ -332,21 +332,23 @@ hdr_cache_time = 0
 HDR_CACHE_TIME = 2
 hdr_cache_lock = threading.Lock()
 
-# Подтверждённый HDR (именно HDR, не ошибка чтения) запоминается на всю
-# игровую/медиа-сессию, чтобы не долбить DDC/CI каждую секунду.
-# Сбрасывается при закрытии игры/медиаплеера или при ручной попытке
-# переключения режима (хоткей всегда делает force_refresh и сам сбросит флаг).
+# Подтверждённый HDR кэшируется не по времени, а по конкретному окну:
+# confirmed_hdr_active=True действует, только пока hdr_confirmed_for_hwnd
+# указывает на то же самое, ещё существующее окно. Другое окно (новая игра,
+# заново открытый плеер) или закрытие этого окна – кэш невалиден, и
+# следующая проверка идёт по-настоящему в монитор, без ожидания таймеров.
 confirmed_hdr_active = False
+hdr_confirmed_for_hwnd = None
 
-# Гейт для сообщения "Обнаружена игра (подтверждено)..." в логе – чтобы оно
-# писалось один раз за попытку, а не каждую секунду, пока переключение
-# заблокировано (например, HDR-ом). Сбрасывается при успешном переключении
-# и при сбросе сессии (см. reset_confirmed_hdr()).
+# Гейт для сообщения "Обнаружена игра (подтверждено)..." – пишется один раз
+# за попытку, а не каждую секунду, пока переключение заблокировано. Хранит
+# и окно, для которого уже логировали, – при смене окна (новая игра) лог
+# пишется заново, а не подавляется.
 game_switch_attempt_logged = False
+game_switch_attempt_hwnd = None
 
 # Последний медиаплеер, для которого уже выводили в лог "Медиаплеер X –
-# игровой режим" – чтобы не дублировать эту строку каждую секунду, пока
-# окно медиаплеера остаётся активным на весь экран.
+# игровой режим" – чтобы не дублировать при каждой итерации.
 last_media_player_logged = None
 
 MEDIA_PLAYER_PROCESSES = [
@@ -487,11 +489,8 @@ def safe_monitor_operation(operation, monitor_idx=None):
         monitor = monitors[target_idx]
         with connections_lock:
             active_connections += 1
-        # Сериализуем реальный обмен по DDC/CI между потоками – иначе
-        # monitor_loop() и delayed_media_switch() (или toggle_mode) могут
-        # одновременно открыть соединение и одновременно слать команды по
-        # одной физической шине I2C, что чревато битыми/перепутанными
-        # командами и как раз теми ошибками чтения из логов.
+        # monitor_io_lock сериализует реальный обмен по DDC/CI между
+        # потоками (см. её определение выше, зачем).
         with monitor_io_lock:
             with monitor:
                 result = operation(monitor)
@@ -534,10 +533,22 @@ def is_hdr_blocked(force_refresh=False):
     return result in ("hdr", "error"), result
 
 def reset_confirmed_hdr():
-    global confirmed_hdr_active
+    global confirmed_hdr_active, hdr_confirmed_for_hwnd
     if confirmed_hdr_active:
         log("Сброс запомненного состояния HDR")
     confirmed_hdr_active = False
+    hdr_confirmed_for_hwnd = None
+
+def hdr_cache_valid_for(hwnd):
+    """True, если confirmed_hdr_active относится именно к hwnd и это окно
+    ещё существует. Другое окно или уже закрытое – кэш не годится, вызывающий
+    код должен пойти на свежую проверку вместо использования кэша."""
+    return (
+        confirmed_hdr_active
+        and hwnd is not None
+        and hdr_confirmed_for_hwnd == hwnd
+        and user32.IsWindow(hwnd)
+    )
 
 def show_notification(message):
     def create_notification():
@@ -587,8 +598,22 @@ def get_current_monitor_settings():
 
 def sync_current_mode():
     global current_mode_index
-    brightness, local_dimming = get_current_monitor_settings()
+    # При старте это самое первое обращение к монитору за всю сессию — DDC/CI
+    # чаще всего "спотыкается" именно на нём (контроллер монитора ещё не
+    # готов сразу после открытия соединения). Раньше единственная неудачная
+    # попытка сразу же приводила к current_mode_index=0, даже если монитор
+    # был в этот момент реально в игровом режиме. Несколько попыток с паузой
+    # снимают этот риск почти полностью.
+    brightness = local_dimming = None
+    for attempt in range(3):
+        brightness, local_dimming = get_current_monitor_settings()
+        if brightness is not None and local_dimming is not None:
+            break
+        log(f"Не удалось определить текущий режим при старте (попытка {attempt+1}/3)")
+        if attempt < 2:
+            time.sleep(0.5)
     if brightness is None or local_dimming is None:
+        log("Режим при старте не определён после 3 попыток – считаем стандартным")
         current_mode_index = 0
         return
     if (brightness == modes[0]["brightness"] and local_dimming == modes[0]["local_dimming"]):
@@ -747,30 +772,25 @@ def retry_dimming_only(mode_index, attempts=5, delay=0.5):
             return
     log("Не удалось дожать LD после дополнительных попыток")
 
-def apply_mode_by_index(index, force_hdr_check=False):
+def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
     global current_mode_index, tray_icon, last_excluded_process_logged
-    global confirmed_hdr_active
+    global confirmed_hdr_active, hdr_confirmed_for_hwnd
     if current_mode_index == index:
         return True
 
-    # Полносессионный кэш "HDR подтверждён" применяем только когда пытаемся
-    # ВОЙТИ в игровой режим (index == 1) – именно тут повторные попытки идут
-    # раз в секунду, пока игра активна, и именно это давало спам DDC/CI.
-    # Для ВОЗВРАТА в стандартный режим (index == 0) кэш НЕ используем: игра
-    # там уже закрыта, никакого "сессии" больше нет, и если кэшировать
-    # надолго, автоматический возврат в SDR никогда не сработает сам после
-    # того как пользователь выключит HDR – придётся каждый раз жать хоткей.
-    # Для этого направления опрос идёт на обычном такте кэша is_hdr_enabled
-    # (HDR_CACHE_TIME, по умолчанию раз в 2 сек) – это и есть штатное
-    # поведение "подождать, пока HDR не выключат".
+    # Кэш "HDR подтверждён" применяем только для входа в игровой режим
+    # (index == 1) и только пока это то же самое окно, что его установило
+    # (см. hdr_cache_valid_for) – возврат в стандартный (index == 0) кэш не
+    # использует вовсе, чтобы он сам восстанавливался, как только выключат HDR.
     use_session_cache = (index == 1)
 
-    if use_session_cache and confirmed_hdr_active and not force_hdr_check:
-        # Не логируем каждый раз – причина блокировки уже была записана один
-        # раз в момент, когда HDR подтвердился (см. ниже, "запомнено до конца
-        # сессии"). Повторение этой строки каждую секунду ничего нового не
-        # сообщает, а раздувает лог на тысячи одинаковых строк за сессию.
+    if use_session_cache and not force_hdr_check and hdr_cache_valid_for(hwnd):
         return False
+    if use_session_cache and confirmed_hdr_active and not force_hdr_check:
+        # confirmed_hdr_active стоит, но hwnd не совпал (или окно уже
+        # закрылось) – это другая сессия, кэш к ней не относится.
+        confirmed_hdr_active = False
+        hdr_confirmed_for_hwnd = None
 
     # Запоминаем, что показывала проверка ДО этого вызова (чтобы отличить
     # "было заблокировано, сейчас нет" от "и раньше было ок") – переменная
@@ -782,18 +802,19 @@ def apply_mode_by_index(index, force_hdr_check=False):
         if hdr_check == "hdr":
             if use_session_cache:
                 confirmed_hdr_active = True
-                log("HDR подтверждён – переключение режимов заблокировано (запомнено до конца сессии)")
+                hdr_confirmed_for_hwnd = hwnd
+                log("HDR подтверждён – переключение режимов заблокировано (запомнено для этого окна)")
             else:
                 log("HDR подтверждён – возврат в стандартный режим отложен (проверим ещё раз позже)")
         else:
             log("Ошибка чтения яркости – переключение режимов заблокировано (не запоминается)")
         return False
 
-    # Свежая проверка (обычно force_hdr_check=True) подтвердила, что HDR не
-    # активен – если флаг оставался True с прошлого раза, снимаем его, иначе
-    # он "залипнет" и будет блокировать следующие попытки без опроса монитора.
+    # Свежая проверка подтвердила, что HDR не активен – если флаг оставался
+    # True с прошлого раза, снимаем его, иначе он "залипнет".
     if confirmed_hdr_active:
         confirmed_hdr_active = False
+        hdr_confirmed_for_hwnd = None
         log("Свежая проверка не подтвердила HDR – запомненное состояние снято")
 
     if was_blocking_before:
@@ -912,22 +933,22 @@ def is_game_window(hwnd):
     return is_game
 
 def delayed_media_switch(hwnd):
-    global media_timer, game_window_hwnd, last_reported_state, confirmed_hdr_active
+    global media_timer, game_window_hwnd, last_reported_state
+    global confirmed_hdr_active, hdr_confirmed_for_hwnd
     with media_timer_lock:
         media_timer = None
-    # Захватываем тот же game_state_lock, что и monitor_loop() – это другой
-    # поток (threading.Timer), и без общего лока он мог бы одновременно с
-    # monitor_loop() читать/менять game_window_hwnd/current_mode_index и
-    # одновременно с ним дёргать переключение режима.
+    # Другой поток (Timer) – берём тот же game_state_lock, что и monitor_loop()
+    # (см. его определение выше, зачем).
     with game_state_lock:
-        if confirmed_hdr_active:
-            log("HDR ранее подтверждён в этой сессии – переключение медиаплеера отменено (без опроса монитора)")
+        if hdr_cache_valid_for(hwnd):
+            log("HDR ранее подтверждён для этого окна – переключение медиаплеера отменено (без опроса монитора)")
             return
         blocked, hdr_check = is_hdr_blocked()
         if blocked:
             if hdr_check == "hdr":
                 confirmed_hdr_active = True
-                log("HDR подтверждён – переключение медиаплеера отменено (запомнено до конца сессии)")
+                hdr_confirmed_for_hwnd = hwnd
+                log("HDR подтверждён – переключение медиаплеера отменено (запомнено для этого окна)")
             else:
                 log("Ошибка чтения яркости – переключение медиаплеера отменено")
             return
@@ -941,13 +962,14 @@ def delayed_media_switch(hwnd):
         if blocked:
             if hdr_check == "hdr":
                 confirmed_hdr_active = True
-                log("HDR включился перед финальным переключением – отмена (запомнено до конца сессии)")
+                hdr_confirmed_for_hwnd = hwnd
+                log("HDR включился перед финальным переключением – отмена (запомнено для этого окна)")
             else:
                 log("Ошибка чтения яркости перед финальным переключением – отмена")
             return
         if current_mode_index != 1:
             log(f"Медиаплеер подтверждён через {media_delay_seconds} сек – переключение на игровой режим")
-            if apply_mode_by_index(1):
+            if apply_mode_by_index(1, hwnd=hwnd):
                 game_window_hwnd = hwnd
                 last_reported_state = True
         else:
@@ -959,7 +981,7 @@ def monitor_loop():
     global current_mode_index, stop_hotkey_thread, game_counter, game_window_hwnd
     global auto_switch_enabled, media_timer, media_delay_seconds, last_reported_state
     global manual_override_active, manual_override_waiting
-    global confirmed_hdr_active, game_switch_attempt_logged
+    global confirmed_hdr_active, hdr_confirmed_for_hwnd, game_switch_attempt_logged, game_switch_attempt_hwnd
 
     while not stop_hotkey_thread:
         lock_held = False  # True только пока ИМЕННО ЭТА итерация держит game_state_lock
@@ -999,6 +1021,7 @@ def monitor_loop():
                         game_counter = 0
                         reset_confirmed_hdr()
                         game_switch_attempt_logged = False
+                        game_switch_attempt_hwnd = None
                         if current_mode_index != 0:
                             apply_mode_by_index(0)
                         game_state_lock.release()
@@ -1029,14 +1052,15 @@ def monitor_loop():
                     if game_counter >= GAME_THRESHOLD:
                         if game_window_hwnd == hwnd and last_reported_state == True:
                             pass
-                        elif confirmed_hdr_active:
-                            pass  # HDR уже подтверждён в этой сессии – не опрашиваем монитор повторно
+                        elif hdr_cache_valid_for(hwnd):
+                            pass  # HDR уже подтверждён именно для этого окна – не опрашиваем монитор повторно
                         else:
                             blocked, hdr_check = is_hdr_blocked()
                             if blocked:
                                 if hdr_check == "hdr":
                                     confirmed_hdr_active = True
-                                    log("HDR подтверждён – медиаплеер не активирует игровой режим (запомнено до конца сессии)")
+                                    hdr_confirmed_for_hwnd = hwnd
+                                    log("HDR подтверждён – медиаплеер не активирует игровой режим (запомнено для этого окна)")
                                 else:
                                     log("Ошибка чтения яркости – медиаплеер не активирует игровой режим")
                             else:
@@ -1054,29 +1078,19 @@ def monitor_loop():
                             log("Обнаружена игра – таймер медиа отменён")
                     if game_counter >= GAME_THRESHOLD:
                         if last_reported_state != True:
-                            # Логируем попытку только один раз, пока не сменится
-                            # ситуация – иначе, пока переключение заблокировано
-                            # (HDR), эта строка пишется каждую секунду часами.
-                            if not game_switch_attempt_logged:
+                            # Логируем попытку один раз на окно – при смене окна
+                            # (новая игра) лог пишется заново.
+                            if not game_switch_attempt_logged or game_switch_attempt_hwnd != hwnd:
                                 log("Обнаружена игра (подтверждено) – переключение на игровой режим")
                                 game_switch_attempt_logged = True
-                            if apply_mode_by_index(1):
+                                game_switch_attempt_hwnd = hwnd
+                            if apply_mode_by_index(1, hwnd=hwnd):
                                 game_window_hwnd = hwnd
                                 last_reported_state = True
                                 game_switch_attempt_logged = False
+                                game_switch_attempt_hwnd = None
             else:
-                was_counting_game = game_counter > 0
                 game_counter = max(game_counter - 1, 0)
-                # Сбрасываем запомненный HDR только ОДИН РАЗ – в момент, когда
-                # счётчик впервые дошёл до нуля (это переход, а не уровень).
-                # Раньше условие "game_counter == 0" оставалось истинным на
-                # каждой последующей итерации, пока счётчик стоял на нуле, и
-                # reset_confirmed_hdr() срабатывал каждую секунду – это сводило
-                # на нет весь смысл кэша и снова приводило к опросу DDC/CI
-                # каждую секунду.
-                if was_counting_game and game_counter == 0:
-                    reset_confirmed_hdr()
-                    game_switch_attempt_logged = False
                 with media_timer_lock:
                     if media_timer is not None:
                         media_timer.cancel()
@@ -1086,8 +1100,9 @@ def monitor_loop():
                 if game_window_hwnd is not None:
                     if not user32.IsWindow(game_window_hwnd):
                         log("Игра закрыта (окно уничтожено) – возврат стандартного режима")
-                        reset_confirmed_hdr()  # окно закрыто – гарантированный конец сессии
+                        reset_confirmed_hdr()
                         game_switch_attempt_logged = False
+                        game_switch_attempt_hwnd = None
                         # Хендл сбрасываем ВСЕГДА, даже если переключение не
                         # удалось – иначе при блокировке HDR эта ветка будет
                         # срабатывать каждую секунду до бесконечности (окно уже
@@ -1104,7 +1119,7 @@ def monitor_loop():
                     else:
                         if last_reported_state != True:
                             log("Игра уже запущена (свёрнута) – переключаем на игровой")
-                            if apply_mode_by_index(1):
+                            if apply_mode_by_index(1, hwnd=game_window_hwnd):
                                 last_reported_state = True
                 else:
                     if last_reported_state is None:
@@ -1131,11 +1146,10 @@ def monitor_loop():
 
         time.sleep(1)
 
-# ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ toggle_mode ==========
 def toggle_mode(icon=None):
     global current_mode_index, last_switch_time, last_reported_state
     global manual_override_active, manual_override_waiting
-    global game_window_hwnd, game_counter, confirmed_hdr_active
+    global game_window_hwnd, game_counter, confirmed_hdr_active, hdr_confirmed_for_hwnd
     
     now = time.time()
     if now - last_switch_time < DELAY:
@@ -1145,15 +1159,17 @@ def toggle_mode(icon=None):
         log("\n" + "="*50)
         log("Начало переключения режима")
 
-        # Ручная попытка переключения – всегда делаем свежий опрос монитора
-        # и пересматриваем запомненное состояние HDR по его результату,
-        # независимо от того, что было запомнено ранее в этой сессии.
-        # Захватываем game_state_lock на всё время – это отдельный поток
-        # (хоткей), и без общего лока он мог бы гонять с monitor_loop()
-        # за одни и те же game_window_hwnd/current_mode_index.
+        # Ручная попытка переключения – всегда делаем свежий опрос монитора,
+        # независимо от того, что было запомнено ранее. Другой поток (хоткей)
+        # – тот же game_state_lock, что и monitor_loop().
         with game_state_lock:
             blocked, hdr_check_result = is_hdr_blocked(force_refresh=True)
+            # Ручное переключение не привязано к конкретному окну игры/медиа –
+            # это не auto-detection сессия, поэтому hdr_confirmed_for_hwnd
+            # здесь не используется (сбрасываем, чтобы не оставлять чужой
+            # hwnd от прошлой auto-сессии привязанным к этому флагу).
             confirmed_hdr_active = (hdr_check_result == "hdr")
+            hdr_confirmed_for_hwnd = None
             if blocked:
                 log("HDR включен или ошибка чтения - переключение заблокировано (ручная попытка)")
                 show_notification(t("notif_hdr_enabled"))
@@ -1214,8 +1230,6 @@ def toggle_mode(icon=None):
         log("="*50)
     except Exception as e:
         log(f"Ошибка переключения: {e}")
-
-# ========== КОНЕЦ ИЗМЕНЕНИЙ ==========
 
 def get_local_dimming_name(value):
     for option in get_local_dimming_options():
@@ -1302,11 +1316,9 @@ def create_settings_window():
                         hwnd = user32.GetForegroundWindow()
                         if hwnd and is_game_window(hwnd):
                             log("Авто-переключение включено – игра/медиаплеер активна, переключаем")
-                            # Отдельный поток – защищаем тем же локом, что и
-                            # monitor_loop()/delayed_media_switch()/toggle_mode(),
-                            # чтобы не гонять за current_mode_index одновременно.
+                            # Другой поток – тот же game_state_lock, что и monitor_loop().
                             with game_state_lock:
-                                apply_mode_by_index(1, force_hdr_check=True)
+                                apply_mode_by_index(1, force_hdr_check=True, hwnd=hwnd)
                     threading.Thread(target=check_now, daemon=True).start()
 
                 window.destroy()
@@ -1605,17 +1617,17 @@ def create_settings_window():
     tk_queue.put(('window', create_window))
 
 def set_hdr_color_preset():
-    global confirmed_hdr_active
+    global confirmed_hdr_active, hdr_confirmed_for_hwnd
     try:
         log("Проверка HDR для пресета...")
-        # Отдельный поток (хоткей) – тот же game_state_lock, что и
-        # monitor_loop()/delayed_media_switch()/toggle_mode(), чтобы запись в
-        # confirmed_hdr_active не гонялась с остальными потоками.
+        # Другой поток (хоткей) – тот же game_state_lock, что и monitor_loop().
         with game_state_lock:
             hdr_check_result = is_hdr_enabled(force_refresh=True)
-            # Это тоже ручное действие (хоткей) – обновляем запомненное состояние
-            # по свежему результату.
+            # Это тоже ручное действие (хоткей), не привязанное к конкретному
+            # окну – обновляем confirmed_hdr_active по свежему результату и
+            # сбрасываем hdr_confirmed_for_hwnd (см. toggle_mode).
             confirmed_hdr_active = (hdr_check_result == "hdr")
+            hdr_confirmed_for_hwnd = None
             if hdr_check_result != "hdr":
                 log("HDR не включен (или ошибка чтения – не подтверждено, пресет не трогаем)")
                 return
@@ -1688,7 +1700,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.3.2") + " \n"
+            t("about_version", version="1.3.3") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
