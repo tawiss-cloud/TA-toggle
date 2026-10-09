@@ -238,7 +238,18 @@ def get_local_dimming_options():
 # ===================== WINAPI =====================
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
-psapi = ctypes.windll.psapi
+
+# Имя процесса читаем с минимальным правом (без доступа к памяти процесса) –
+# это безопаснее для античитов и работает для большего числа процессов.
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+kernel32.OpenProcess.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+kernel32.QueryFullProcessImageNameW.argtypes = [
+    ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD, ctypes.wintypes.LPWSTR,
+    ctypes.POINTER(ctypes.wintypes.DWORD)]
+kernel32.QueryFullProcessImageNameW.restype = ctypes.wintypes.BOOL
 
 HOTKEY_ID = 1
 MOD_ALT = 0x0001
@@ -1063,13 +1074,13 @@ def get_process_name(hwnd):
         ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if pid.value == 0:
             return None
-        handle = kernel32.OpenProcess(0x0400 | 0x0010, False, pid.value)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
         if not handle:
             return None
         try:
-            buffer = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-            size = psapi.GetModuleFileNameExW(handle, None, buffer, ctypes.wintypes.MAX_PATH)
-            if size > 0:
+            buffer = ctypes.create_unicode_buffer(32768)
+            size = ctypes.wintypes.DWORD(len(buffer))
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
                 return os.path.basename(buffer.value)
         finally:
             kernel32.CloseHandle(handle)
@@ -1917,7 +1928,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.3.5") + " \n"
+            t("about_version", version="1.3.6") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
