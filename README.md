@@ -61,7 +61,7 @@ When running in SDR, the program automatically switches the monitor to Gaming mo
 
 ## Manual process exclusion
 
-If you don’t need automatic switching for a certain application, you can add its process to the exclusions. To do this, in the settings click “Select from running”, select the desired process, and add it to the exclusion list. After that, the program will ignore it during automatic mode switching.
+If you don’t need automatic switching for a certain application, you can add its process to the exclusions. To do this, in the settings click “Choose from running”, select the desired process, and add it to the exclusion list. After that, the program will ignore it during automatic mode switching.
 
 To find out which process switched the mode, after automatic switching is triggered, hover the cursor over the program icon — the name of that process will be shown in the tooltip. This is convenient if you need to quickly find and exclude the application that caused the mode change.
 
