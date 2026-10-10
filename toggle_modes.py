@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 import json
 import os
+import re
 import queue
 import webbrowser
 
@@ -63,6 +64,17 @@ TRANSLATIONS = {
         "settings_auto_switch": "Автоматическое переключение игровых режимов",
         "settings_media_players": "Включать медиаплееры (MPC, VLC, PotPlayer) в игровой режим",
         "settings_media_delay_label": "Задержка перед переключением для медиаплееров (сек):",
+        "settings_exclusions_group": "Свои исключения",
+        "settings_exclusions_hint": "Программы из этого списка не считаются играми и не включают игровой режим. Имя процесса окна может отличаться от запускаемого exe (например, у игр на Unreal Engine) – надёжнее выбирать из запущенных. Встроенные исключения (браузеры, Проводник и др.) остаются в силе. Изменения применяются после сохранения.",
+        "settings_exclusions_add": "Добавить",
+        "settings_exclusions_running": "Выбрать из запущенных",
+        "settings_exclusions_running_title": "Запущенные программы",
+        "settings_exclusions_running_hint": "Программы с видимыми окнами. Выберите нужную (двойной щелчок или кнопка «Добавить») – будет добавлено точное имя процесса окна.",
+        "settings_exclusions_refresh": "Обновить",
+        "settings_exclusions_remove": "Удалить выбранное",
+        "settings_exclusions_name_label": "Название процесса",
+        "err_exclusion_invalid": "Введите имя процесса, например game.exe",
+        "err_exclusion_duplicate": "{name} уже есть в исключениях",
         "settings_range_1_60": "(1-60)",
         "settings_standard_mode": "Стандартный режим (SDR)",
         "settings_gaming_mode": "Игровой режим (SDR)",
@@ -94,12 +106,13 @@ TRANSLATIONS = {
         "about_standard_line": "• Стандартный: {dimming} ({value}), яркость {brightness}",
         "about_gaming_line": "• Игровой: {dimming} ({value}), яркость {brightness}",
         "about_excluded_title": "Исключены из определения игр:",
-        "about_excluded_list": "Wallpaper Engine, Chrome, Firefox, Edge, Brave, Opera, Проводник,\ncmd, powershell, notepad, mspaint",
+        "about_excluded_list": "Wallpaper Engine, браузеры (Chrome, Firefox, Edge, Brave, Opera,\nVivaldi, Яндекс и др.), Проводник, cmd, powershell, notepad,\nmspaint и свои исключения из настроек",
         "about_version": "Версия: {version}",
         "menu_about": "О программе",
         "menu_settings": "Настройки",
         "menu_exit": "Закрыть",
         "tray_title": "Режим {mode}",
+        "tray_title_with_process": "Режим {mode} ({process})",
         "console_start": "=== Запуск программы ===",
         "console_standard": "Стандартный: LD {dimming}, яркость {brightness}",
         "console_gaming": "Игровой: LD {dimming}, яркость {brightness}",
@@ -151,6 +164,17 @@ TRANSLATIONS = {
         "settings_auto_switch": "Automatic game mode switching",
         "settings_media_players": "Treat media players (MPC, VLC, PotPlayer) as gaming mode",
         "settings_media_delay_label": "Delay before switching for media players (sec):",
+        "settings_exclusions_group": "Custom exclusions",
+        "settings_exclusions_hint": "Programs in this list are not treated as games and do not trigger gaming mode. The window's process name can differ from the launched exe (e.g. Unreal Engine games) – picking from running programs is more reliable. Built-in exclusions (browsers, Explorer, etc.) still apply. Changes take effect after saving.",
+        "settings_exclusions_add": "Add",
+        "settings_exclusions_running": "Choose from running...",
+        "settings_exclusions_running_title": "Running programs",
+        "settings_exclusions_running_hint": "Programs with visible windows. Select one (double-click or the Add button) – the exact process name of the window will be added.",
+        "settings_exclusions_refresh": "Refresh",
+        "settings_exclusions_remove": "Remove selected",
+        "settings_exclusions_name_label": "Process name",
+        "err_exclusion_invalid": "Enter a process name, e.g. game.exe",
+        "err_exclusion_duplicate": "{name} is already excluded",
         "settings_range_1_60": "(1-60)",
         "settings_standard_mode": "Standard mode (SDR)",
         "settings_gaming_mode": "Gaming mode (SDR)",
@@ -182,12 +206,13 @@ TRANSLATIONS = {
         "about_standard_line": "• Standard: {dimming} ({value}), brightness {brightness}",
         "about_gaming_line": "• Gaming: {dimming} ({value}), brightness {brightness}",
         "about_excluded_title": "Excluded from game detection:",
-        "about_excluded_list": "Wallpaper Engine, Chrome, Firefox, Edge, Brave, Opera, Explorer,\ncmd, powershell, notepad, mspaint",
+        "about_excluded_list": "Wallpaper Engine, browsers (Chrome, Firefox, Edge, Brave, Opera,\nVivaldi, Yandex, etc.), Explorer, cmd, powershell, notepad,\nmspaint and your custom exclusions from settings",
         "about_version": "Version: {version}",
         "menu_about": "About",
         "menu_settings": "Settings",
         "menu_exit": "Exit",
         "tray_title": "Mode {mode}",
+        "tray_title_with_process": "Mode {mode} ({process})",
         "console_start": "=== Program starting ===",
         "console_standard": "Standard: LD {dimming}, brightness {brightness}",
         "console_gaming": "Gaming: LD {dimming}, brightness {brightness}",
@@ -539,16 +564,92 @@ standard_return_blocked_logged = False
 # игровой режим" – чтобы не дублировать при каждой итерации.
 last_media_player_logged = None
 
+# Имя процесса, которое сейчас показано в подсказке трея (только для игрового
+# режима, установленного автоматически). Используется в rebuild_tray_menu(),
+# чтобы после смены языка подсказка не потеряла суффикс с процессом.
+last_tray_process_name = None
+
 MEDIA_PLAYER_PROCESSES = [
     "mpc-hc.exe", "mpc-be.exe", "mpc-hc64.exe", "mpc-be64.exe",
     "vlc.exe", "potplayer.exe", "kmplayer.exe", "mediaplayerclassic.exe"
 ]
 
 EXCLUDED_PROCESSES = [
-    "wallpaper32.exe", "wallpaper64.exe", "chrome.exe", "firefox.exe",
-    "msedge.exe", "brave.exe", "opera.exe", "explorer.exe", "StartMenuExperienceHost.exe",
-    "cmd.exe", "powershell.exe", "notepad.exe", "mspaint.exe"
+    "wallpaper32.exe", "wallpaper64.exe", "explorer.exe", "StartMenuExperienceHost.exe",
+    "cmd.exe", "powershell.exe", "notepad.exe", "mspaint.exe",
+    # Браузеры: Chromium-based
+    "chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "vivaldi.exe", "chromium.exe",
+    "browser.exe", "yandex.exe", "whale.exe", "thorium.exe", "iron.exe", "epic.exe",
+    "dragon.exe", "slimjet.exe", "torch.exe", "kinza.exe", "amigo.exe", "sidekick.exe",
+    "wavebox.exe", "arc.exe", "duckduckgo.exe", "avastbrowser.exe", "avgbrowser.exe",
+    "ccleanerbrowser.exe", "ucbrowser.exe", "maxthon.exe", "360chrome.exe", "360se.exe",
+    "qqbrowser.exe", "sogouexplorer.exe", "baidubrowser.exe",
+    # Браузеры: Gecko-based
+    "firefox.exe", "waterfox.exe", "librewolf.exe", "floorp.exe", "zen.exe",
+    "palemoon.exe", "basilisk.exe", "seamonkey.exe", "k-meleon.exe",
+    # Прочие браузеры
+    "iexplore.exe", "falkon.exe", "midori.exe", "otter-browser.exe", "qutebrowser.exe",
+    "dooble.exe", "slimbrowser.exe", "lunascape.exe"
 ]
+
+# Исключения, добавленные пользователем (имена exe в нижнем регистре); хранятся в настройках.
+custom_excluded_processes = []
+
+# Последние позиции окон ("settings", "about"): {"x": int, "y": int}; хранятся в настройках.
+window_positions = {}
+
+def normalize_process_name(text):
+    """Приводит ввод к имени exe в нижнем регистре или возвращает None, если ввод некорректен."""
+    if not isinstance(text, str):
+        return None
+    name = text.strip().strip('"').replace("/", "\\").split("\\")[-1].strip().lower()
+    if not name or any(c in name for c in '<>:"|?*'):
+        return None
+    if "." not in name:
+        name += ".exe"
+    return name if name.endswith(".exe") and len(name) > 4 else None
+
+def is_excluded_process(process_name):
+    name = process_name.lower()
+    return name in [p.lower() for p in EXCLUDED_PROCESSES] or name in custom_excluded_processes
+
+def get_window_origin(win):
+    """Левый верхний угол окна в тех же координатах, что принимает geometry()."""
+    try:
+        m = re.match(r"\d+x\d+\+(-?\d+)\+(-?\d+)", win.geometry())
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+    return win.winfo_x(), win.winfo_y()
+
+def get_window_start_position(key, width, height):
+    """Сохранённая позиция окна, приведённая к видимой области экранов, или None."""
+    pos = window_positions.get(key)
+    if not pos:
+        return None
+    vx, vy = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+    vw, vh = user32.GetSystemMetrics(78), user32.GetSystemMetrics(79)
+    if vw <= 0 or vh <= 0:
+        return None
+    x = max(vx, min(pos["x"], vx + vw - width))
+    y = max(vy, min(pos["y"], vy + vh - height))
+    return x, y
+
+def remember_window_position(key, win):
+    """Запоминает позицию окна и дописывает её в файл настроек (остальные поля не трогает)."""
+    try:
+        x, y = get_window_origin(win)
+        window_positions[key] = {"x": x, "y": y}
+        data = {}
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        data['window_positions'] = window_positions
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"Ошибка сохранения позиции окна: {e}")
 
 def is_debug_active():
     return advanced_settings_enabled and debug_enabled
@@ -619,6 +720,15 @@ def load_settings():
                     media_players_enabled = data['media_players_enabled']
                 if 'media_delay_seconds' in data:
                     media_delay_seconds = data['media_delay_seconds']
+                if isinstance(data.get('custom_excluded_processes'), list):
+                    names = (normalize_process_name(x) for x in data['custom_excluded_processes'])
+                    custom_excluded_processes[:] = list(dict.fromkeys(n for n in names if n))
+                if isinstance(data.get('window_positions'), dict):
+                    for key in ("settings", "about"):
+                        pos = data['window_positions'].get(key)
+                        if (isinstance(pos, dict) and isinstance(pos.get('x'), int)
+                                and isinstance(pos.get('y'), int)):
+                            window_positions[key] = {"x": pos['x'], "y": pos['y']}
                 if 'advanced_settings_enabled' in data:
                     advanced_settings_enabled = data['advanced_settings_enabled']
                 if 'debug_enabled' in data:
@@ -649,6 +759,8 @@ def save_settings():
             'auto_switch_enabled': auto_switch_enabled,
             'media_players_enabled': media_players_enabled,
             'media_delay_seconds': media_delay_seconds,
+            'custom_excluded_processes': list(custom_excluded_processes),
+            'window_positions': window_positions,
             'advanced_settings_enabled': advanced_settings_enabled,
             'debug_enabled': debug_enabled,
             'hotkey_modifiers': HOTKEY_MODIFIERS,
@@ -766,6 +878,24 @@ def hdr_cache_valid_for(hwnd):
         and hdr_confirmed_for_hwnd == hwnd
         and user32.IsWindow(hwnd)
     )
+
+def update_tray_title(mode_index, process_name=None):
+    """Единая точка обновления подсказки трея.
+    process_name != None – суффикс с именем процесса (только для игрового
+    режима, установленного автоматически). Иначе – просто название режима."""
+    global tray_icon, last_tray_process_name
+    last_tray_process_name = process_name
+    if not tray_icon:
+        return
+    try:
+        if process_name:
+            tray_icon.title = t("tray_title_with_process",
+                                mode=modes[mode_index]['name'],
+                                process=process_name)
+        else:
+            tray_icon.title = t("tray_title", mode=modes[mode_index]['name'])
+    except Exception as e:
+        log(f"Ошибка обновления подсказки трея: {e}")
 
 def show_notification(message):
     def create_notification():
@@ -983,7 +1113,7 @@ def retry_dimming_only(mode_index, attempts=5, delay=0.5):
     log("Не удалось дожать LD после дополнительных попыток")
 
 def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
-    global current_mode_index, tray_icon, last_excluded_process_logged
+    global current_mode_index, last_excluded_process_logged
     global confirmed_hdr_active, hdr_confirmed_for_hwnd, standard_return_blocked_logged
     global last_session_media
     if current_mode_index == index:
@@ -1060,13 +1190,66 @@ def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
         threading.Thread(target=retry_brightness_only, args=(index,), daemon=True).start()
     if not success_dimming:
         threading.Thread(target=retry_dimming_only, args=(index,), daemon=True).start()
-    if tray_icon:
+
+    # Подсказка трея: суффикс с процессом – только для игрового режима,
+    # установленного автоматически (hwnd передан вызывающим кодом).
+    tray_process = None
+    if index == 1 and hwnd is not None:
         try:
-            tray_icon.title = t("tray_title", mode=modes[current_mode_index]['name'])
-        except:
-            pass
+            tray_process = get_process_name(hwnd)
+        except Exception as e:
+            log(f"Не удалось получить имя процесса для подсказки трея: {e}")
+            tray_process = None
+    update_tray_title(current_mode_index, tray_process)
+
     show_notification(t("notif_mode", mode=modes[current_mode_index]['name']))
     return True
+
+def check_active_game_exclusion(newly_added):
+    """Если текущая игровая сессия была запущена автоматически процессом, который
+    только что добавлен в исключения, вернуть стандартный режим.
+    Ручной режим (manual_override_active) не трогаем – там переключение сделал пользователь."""
+    def worker():
+        global game_window_hwnd, last_reported_state, game_counter
+        global game_switch_attempt_logged, game_switch_attempt_hwnd
+        global standard_restore_pending, standard_return_attempt_logged
+        global standard_return_blocked_logged, standard_return_last_attempt_time
+        global media_timer
+
+        with game_state_lock:
+            if manual_override_active:
+                return
+            if game_window_hwnd is None or not user32.IsWindow(game_window_hwnd):
+                return
+            try:
+                proc = get_process_name(game_window_hwnd)
+            except Exception:
+                proc = None
+            if not proc or proc.lower() not in newly_added:
+                return
+            log(f"Процесс {proc} добавлен в исключения – возврат в стандартный режим")
+            with media_timer_lock:
+                if media_timer is not None:
+                    media_timer.cancel()
+                    media_timer = None
+            # Сбрасываем состояние игровой сессии, чтобы monitor_loop
+            # не пытался снова уйти в игровой по этому окну.
+            game_window_hwnd = None
+            last_reported_state = False
+            game_counter = 0
+            game_switch_attempt_logged = False
+            game_switch_attempt_hwnd = None
+            reset_confirmed_hdr()
+            standard_restore_pending = False
+            standard_return_attempt_logged = False
+            standard_return_blocked_logged = False
+            standard_return_last_attempt_time = 0.0
+            if current_mode_index != 0:
+                # apply_mode_by_index сам удержит monitor_io_lock и покажет уведомление.
+                if not apply_mode_by_index(0):
+                    # Если HDR/ошибка помешали – довозврат сделает monitor_loop.
+                    standard_restore_pending = True
+    threading.Thread(target=worker, daemon=True).start()
 
 def get_process_name(hwnd):
     try:
@@ -1088,6 +1271,44 @@ def get_process_name(hwnd):
     except Exception as e:
         log(f"Ошибка получения имени процесса: {e}")
         return None
+
+def list_windowed_processes():
+    """[(имя_процесса, заголовок_окна)] для окон, которые видны в Alt+Tab.
+    Имя берётся тем же get_process_name(), что и при определении игры, поэтому
+    совпадает с тем, что сравнивается со списком исключений."""
+    found = {}
+    own_pid = os.getpid()
+    enum_proc_type = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+
+    def callback(hwnd, lparam):
+        try:
+            if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4):  # GW_OWNER
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length == 0:
+                return True
+            ex_style = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+            if (ex_style & 0x00000080) and not (ex_style & 0x00040000):  # TOOLWINDOW без APPWINDOW
+                return True
+            cloaked = ctypes.wintypes.DWORD(0)  # окна UWP-приложений, скрытые на другом рабочем столе
+            ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+            if cloaked.value:
+                return True
+            pid = ctypes.wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value == own_pid:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            name = get_process_name(hwnd)
+            if name:
+                found.setdefault(name.lower(), buf.value)
+        except Exception as e:
+            log(f"Ошибка перечисления окон: {e}")
+        return True
+
+    user32.EnumWindows(enum_proc_type(callback), 0)
+    return sorted(found.items())
 
 def is_game_window(hwnd):
     global last_excluded_process_logged, last_media_player_logged
@@ -1123,7 +1344,7 @@ def is_game_window(hwnd):
     is_game = covers_most and (not has_caption or is_popup)
     process_name = get_process_name(hwnd)
     if process_name:
-        if process_name.lower() in [p.lower() for p in EXCLUDED_PROCESSES]:
+        if is_excluded_process(process_name):
             if process_name != last_excluded_process_logged:
                 log(f"Исключён процесс {process_name}")
                 last_excluded_process_logged = process_name
@@ -1177,7 +1398,7 @@ def delayed_media_switch(hwnd):
                 log("Ошибка чтения яркости перед финальным переключением – отмена")
             return
         if current_mode_index != 1:
-            log(f"Медиаплеер подтверждён через {media_delay_seconds} сек – переключение на игровой режим")
+            log(f"Медиаплеер подтверждён: {get_process_name(hwnd) or 'неизвестный процесс'} через {media_delay_seconds} сек – переключение на игровой режим")
             if apply_mode_by_index(1, hwnd=hwnd):
                 game_window_hwnd = hwnd
                 last_reported_state = True
@@ -1281,7 +1502,7 @@ def monitor_loop():
                             else:
                                 with media_timer_lock:
                                     if media_timer is None:
-                                        log(f"Медиаплеер обнаружен – запускаем задержку {media_delay_seconds} сек")
+                                        log(f"Медиаплеер обнаружен: {process_name} – запускаем задержку {media_delay_seconds} сек")
                                         media_timer = threading.Timer(media_delay_seconds, delayed_media_switch, args=[hwnd])
                                         media_timer.daemon = True
                                         media_timer.start()
@@ -1296,7 +1517,7 @@ def monitor_loop():
                             # Логируем попытку один раз на окно – при смене окна
                             # (новая игра) лог пишется заново.
                             if not game_switch_attempt_logged or game_switch_attempt_hwnd != hwnd:
-                                log("Обнаружена игра (подтверждено) – переключение на игровой режим")
+                                log(f"Обнаружена игра (подтверждено): {get_process_name(hwnd) or 'неизвестный процесс'} – переключение на игровой режим")
                                 game_switch_attempt_logged = True
                                 game_switch_attempt_hwnd = hwnd
                             if apply_mode_by_index(1, hwnd=hwnd):
@@ -1444,12 +1665,11 @@ def toggle_mode(icon=None):
 
                     last_reported_state = True
 
+                # Ручное переключение – без суффикса с процессом (перезаписываем
+                # то, что мог выставить apply_mode_by_index выше).
+                update_tray_title(current_mode_index, None)
+
                 show_notification(t("notif_mode", mode=mode_name))
-                if icon:
-                    try:
-                        icon.title = t("tray_title", mode=mode_name)
-                    except Exception:
-                        pass
 
         log("="*50)
     except Exception as e:
@@ -1502,6 +1722,12 @@ def create_settings_window():
                 media_players_enabled = media_players_var.get()
                 media_delay_seconds = delay_val
 
+                # Вычисляем, какие процессы были добавлены в этом сохранении,
+                # ДО перезаписи custom_excluded_processes.
+                existing_exclusions = set(custom_excluded_processes)
+                newly_added_exclusions = [p for p in custom_excluded_local if p not in existing_exclusions]
+                custom_excluded_processes[:] = custom_excluded_local
+
                 global advanced_settings_enabled, debug_enabled
                 advanced_settings_enabled = advanced_var.get()
                 debug_enabled = debug_var.get()
@@ -1535,6 +1761,11 @@ def create_settings_window():
                     rebuild_tray_menu()
                     show_notification(t("notif_restart_required"))
 
+                # Если в исключения добавили процесс, который прямо сейчас
+                # автоматически держит игровой режим – вернуть стандартный.
+                if newly_added_exclusions:
+                    check_active_game_exclusion(newly_added_exclusions)
+
                 if auto_switch_enabled:
                     def check_now():
                         hwnd = user32.GetForegroundWindow()
@@ -1545,6 +1776,7 @@ def create_settings_window():
                                 apply_mode_by_index(1, force_hdr_check=True, hwnd=hwnd)
                     threading.Thread(target=check_now, daemon=True).start()
 
+                remember_window_position("settings", window)
                 window.destroy()
             except ValueError as e:
                 show_notification(t("notif_error", error=str(e)))
@@ -1552,6 +1784,7 @@ def create_settings_window():
                 show_notification(t("notif_save_error", error=e))
 
         def on_cancel():
+            remember_window_position("settings", window)
             window.destroy()
 
         def on_standard_dimming_select():
@@ -1587,22 +1820,23 @@ def create_settings_window():
 
         window = tk.Toplevel()
         window.title(t("settings_title"))
-        win_width = 600
-        win_height = 920
+        win_width = 560
         window.update_idletasks()
-        max_height = window.winfo_screenheight() - 80
-        win_height = min(win_height, max_height)
-        window.geometry(f"{win_width}x{win_height}")
+        win_height = min(920, window.winfo_screenheight() - 80)
         window.resizable(False, False)
-        x = (window.winfo_screenwidth() - win_width) // 2
-        y = (window.winfo_screenheight() - win_height) // 2
-        window.geometry(f"+{x}+{y}")
+        start_pos = get_window_start_position("settings", win_width, win_height)
+        if start_pos is None:
+            start_pos = ((window.winfo_screenwidth() - win_width) // 2,
+                         (window.winfo_screenheight() - win_height) // 2)
+        window.geometry(f"{win_width}x{win_height}+{start_pos[0]}+{start_pos[1]}")
 
         canvas = tk.Canvas(window)
         scrollbar = ttk.Scrollbar(window, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        # Содержимое растягиваем на всю ширину окна – иначе блоки с fill=X остаются узкими
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
         canvas.configure(yscrollcommand=scrollbar.set)
 
         main_frame = ttk.Frame(scrollable_frame, padding="15")
@@ -1641,9 +1875,15 @@ def create_settings_window():
         auto_switch_var.trace('w', toggle_media_players_state)
         media_players_var.trace('w', toggle_media_delay_state)
 
+        # -------- Стандартный и игровой режимы: два блока в ряд --------
+        modes_row = ttk.Frame(main_frame)
+        modes_row.pack(fill=tk.X, pady=(0, 15))
+        modes_row.columnconfigure(0, weight=1, uniform="modes")
+        modes_row.columnconfigure(1, weight=1, uniform="modes")
+
         # -------- Стандартный режим --------
-        standard_frame = ttk.LabelFrame(main_frame, text=t("settings_standard_mode"), padding="10")
-        standard_frame.pack(fill=tk.X, pady=(0, 15))
+        standard_frame = ttk.LabelFrame(modes_row, text=t("settings_standard_mode"), padding="10")
+        standard_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
         ttk.Label(standard_frame, text=t("settings_brightness_label")).pack(anchor=tk.W, pady=(0, 5))
         standard_brightness_entry = ttk.Entry(standard_frame, width=20)
         standard_brightness_entry.insert(0, str(modes[0]["brightness"]))
@@ -1661,13 +1901,13 @@ def create_settings_window():
                                  variable=standard_dimming_var, value=option["value"],
                                  command=on_standard_dimming_select)
             rb.pack(anchor=tk.W)
-        standard_desc_label = ttk.Label(standard_frame, text="", wraplength=500, foreground="gray")
+        standard_desc_label = ttk.Label(standard_frame, text="", wraplength=220, foreground="gray")
         standard_desc_label.pack(anchor=tk.W, pady=(5, 0))
         on_standard_dimming_select()
 
         # -------- Игровой режим --------
-        gaming_frame = ttk.LabelFrame(main_frame, text=t("settings_gaming_mode"), padding="10")
-        gaming_frame.pack(fill=tk.X, pady=(0, 15))
+        gaming_frame = ttk.LabelFrame(modes_row, text=t("settings_gaming_mode"), padding="10")
+        gaming_frame.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
         ttk.Label(gaming_frame, text=t("settings_brightness_label")).pack(anchor=tk.W, pady=(0, 5))
         gaming_brightness_entry = ttk.Entry(gaming_frame, width=20)
         gaming_brightness_entry.insert(0, str(modes[1]["brightness"]))
@@ -1685,9 +1925,107 @@ def create_settings_window():
                                  variable=gaming_dimming_var, value=option["value"],
                                  command=on_gaming_dimming_select)
             rb.pack(anchor=tk.W)
-        gaming_desc_label = ttk.Label(gaming_frame, text="", wraplength=500, foreground="gray")
+        gaming_desc_label = ttk.Label(gaming_frame, text="", wraplength=220, foreground="gray")
         gaming_desc_label.pack(anchor=tk.W, pady=(5, 0))
         on_gaming_dimming_select()
+
+        # -------- Свои исключения --------
+        custom_excluded_local = list(custom_excluded_processes)
+        exclusions_frame = ttk.LabelFrame(main_frame, text=t("settings_exclusions_group"), padding="10")
+        exclusions_frame.pack(fill=tk.X, pady=(0, 15))
+        ttk.Label(exclusions_frame, text=t("settings_exclusions_hint"), wraplength=480,
+                  foreground="gray").pack(anchor=tk.W, pady=(0, 5))
+
+        exclusions_list_frame = ttk.Frame(exclusions_frame)
+        exclusions_list_frame.pack(fill=tk.X, pady=(0, 5))
+        exclusions_listbox = tk.Listbox(exclusions_list_frame, height=5, exportselection=False)
+        exclusions_scroll = ttk.Scrollbar(exclusions_list_frame, orient="vertical",
+                                          command=exclusions_listbox.yview)
+        exclusions_listbox.config(yscrollcommand=exclusions_scroll.set)
+        exclusions_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        exclusions_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        for excluded_name in custom_excluded_local:
+            exclusions_listbox.insert(tk.END, excluded_name)
+
+        exclusion_entry_var = tk.StringVar()
+
+        def add_exclusion(name=None):
+            normalized = normalize_process_name(exclusion_entry_var.get() if name is None else name)
+            if not normalized:
+                show_notification(t("err_exclusion_invalid"))
+                return
+            if normalized in custom_excluded_local or normalized in [p.lower() for p in EXCLUDED_PROCESSES]:
+                show_notification(t("err_exclusion_duplicate", name=normalized))
+                return
+            custom_excluded_local.append(normalized)
+            exclusions_listbox.insert(tk.END, normalized)
+            exclusion_entry_var.set("")
+
+        def remove_exclusion():
+            for index in reversed(exclusions_listbox.curselection()):
+                del custom_excluded_local[index]
+                exclusions_listbox.delete(index)
+
+        def pick_running_process():
+            dialog = tk.Toplevel(window)
+            dialog.title(t("settings_exclusions_running_title"))
+            dialog.transient(window)
+            dialog.resizable(False, False)
+            wx, wy = get_window_origin(window)
+            dialog.geometry(f"+{wx + 40}+{wy + 40}")
+            body = ttk.Frame(dialog, padding="10")
+            body.pack(fill=tk.BOTH, expand=True)
+            ttk.Label(body, text=t("settings_exclusions_running_hint"), wraplength=480,
+                      foreground="gray").pack(anchor=tk.W, pady=(0, 5))
+            list_frame = ttk.Frame(body)
+            list_frame.pack(fill=tk.BOTH, expand=True)
+            running_listbox = tk.Listbox(list_frame, width=70, height=14, exportselection=False)
+            running_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=running_listbox.yview)
+            running_listbox.config(yscrollcommand=running_scroll.set)
+            running_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            running_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            running_names = []
+
+            def refresh_running():
+                running_names.clear()
+                running_listbox.delete(0, tk.END)
+                already = {p.lower() for p in EXCLUDED_PROCESSES} | set(custom_excluded_local)
+                for proc_name, title in list_windowed_processes():
+                    if proc_name in already:
+                        continue
+                    running_names.append(proc_name)
+                    running_listbox.insert(tk.END, f"{proc_name}  \u2014  {title[:50]}")
+
+            def choose_running(event=None):
+                selection = running_listbox.curselection()
+                if selection:
+                    add_exclusion(running_names[selection[0]])
+                    dialog.destroy()
+
+            running_listbox.bind("<Double-Button-1>", choose_running)
+            buttons = ttk.Frame(body)
+            buttons.pack(pady=(8, 0))
+            ttk.Button(buttons, text=t("settings_exclusions_add"), command=choose_running).pack(side=tk.LEFT, padx=5)
+            ttk.Button(buttons, text=t("settings_exclusions_refresh"), command=refresh_running).pack(side=tk.LEFT, padx=5)
+            ttk.Button(buttons, text=t("btn_cancel"), command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+            refresh_running()
+            dialog.focus_force()
+
+        exclusion_add_frame = ttk.Frame(exclusions_frame)
+        exclusion_add_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(exclusion_add_frame, text=t("settings_exclusions_name_label")).pack(side=tk.LEFT, padx=(0, 5))
+        exclusion_entry = ttk.Entry(exclusion_add_frame, textvariable=exclusion_entry_var, width=28)
+        exclusion_entry.pack(side=tk.LEFT, padx=(0, 5))
+        exclusion_entry.bind("<Return>", lambda e: add_exclusion())
+        ttk.Button(exclusion_add_frame, text=t("settings_exclusions_add"),
+                   command=add_exclusion).pack(side=tk.LEFT)
+
+        exclusion_buttons_frame = ttk.Frame(exclusions_frame)
+        exclusion_buttons_frame.pack(fill=tk.X)
+        ttk.Button(exclusion_buttons_frame, text=t("settings_exclusions_running"),
+                   command=pick_running_process).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(exclusion_buttons_frame, text=t("settings_exclusions_remove"),
+                   command=remove_exclusion).pack(side=tk.LEFT)
 
         # -------- Дополнительные настройки (чекбокс) --------
         advanced_frame = ttk.Frame(main_frame)
@@ -1697,7 +2035,7 @@ def create_settings_window():
             advanced_frame,
             text=t("settings_advanced_settings"),
             variable=advanced_var,
-            command=lambda: toggle_advanced_container()
+            command=lambda: (toggle_advanced_container(), fit_window())
         )
         advanced_check.pack(anchor=tk.W)
 
@@ -1715,7 +2053,7 @@ def create_settings_window():
             variable=auto_set_var)
         auto_set_check.pack(anchor=tk.W, pady=(0, 10))
 
-        warning_label = ttk.Label(hdr_frame, text=t("settings_hdr_autoset_warning"), foreground="orange", wraplength=500)
+        warning_label = ttk.Label(hdr_frame, text=t("settings_hdr_autoset_warning"), foreground="orange", wraplength=480)
         warning_label.pack(anchor=tk.W, pady=(0, 5))
 
         ttk.Label(hdr_frame, text=t("settings_hdr_preset_label")).pack(anchor=tk.W, pady=(0, 5))
@@ -1821,7 +2159,7 @@ def create_settings_window():
         record_button.pack(anchor=tk.W)
         ttk.Label(hotkey_frame,
                   text=t("settings_hotkey_hint"),
-                  foreground="gray", wraplength=500).pack(anchor=tk.W, pady=(5, 0))
+                  foreground="gray", wraplength=480).pack(anchor=tk.W, pady=(5, 0))
 
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(pady=10)
@@ -1834,6 +2172,27 @@ def create_settings_window():
         def on_mousewheel(event):
             canvas.yview_scroll(int(-1*(event.delta/120)), "units")
         canvas.bind("<MouseWheel>", on_mousewheel)
+
+        def fit_window():
+            """Высота окна – по содержимому, чтобы всё помещалось без прокрутки.
+            Полоса прокрутки остаётся только если содержимое выше экрана."""
+            window.update_idletasks()
+            content_h = scrollable_frame.winfo_reqheight()
+            content_w = scrollable_frame.winfo_reqwidth()
+            max_h = window.winfo_screenheight() - 80
+            needs_scroll = content_h > max_h
+            h = min(content_h, max_h)
+            w = max(win_width, content_w + (scrollbar.winfo_reqwidth() if needs_scroll else 0))
+            x, y = get_window_origin(window)
+            vy, vh = user32.GetSystemMetrics(77), user32.GetSystemMetrics(79)
+            y = max(vy, min(y, vy + vh - h))
+            window.geometry(f"{w}x{h}+{x}+{y}")
+            if needs_scroll:
+                scrollbar.pack(side="right", fill="y")
+            else:
+                scrollbar.pack_forget()
+
+        fit_window()
 
         window.protocol("WM_DELETE_WINDOW", on_cancel)
         window.focus_force()
@@ -1892,7 +2251,9 @@ def rebuild_tray_menu():
                 item(t("menu_settings"), on_settings),
                 item(t("menu_exit"), on_quit)
             )
-            tray_icon.title = t("tray_title", mode=modes[current_mode_index]['name'])
+            # Сохраняем последний процесс в подсказке (если игровой режим был
+            # установлен автоматически), чтобы смена языка не теряла суффикс.
+            update_tray_title(current_mode_index, last_tray_process_name)
         except Exception as e:
             log(f"Ошибка обновления меню трея: {e}")
 
@@ -1903,12 +2264,18 @@ def on_about(icon, item):
     def create_about_window():
         about_window = tk.Toplevel()
         about_window.title(t("about_title"))
-        about_window.geometry("500x460")
+        about_width, about_height = 500, 480
         about_window.resizable(False, False)
         about_window.update_idletasks()
-        x = (about_window.winfo_screenwidth() - 500) // 2
-        y = (about_window.winfo_screenheight() - 460) // 2
-        about_window.geometry(f"+{x}+{y}")
+        start_pos = get_window_start_position("about", about_width, about_height)
+        if start_pos is None:
+            start_pos = ((about_window.winfo_screenwidth() - about_width) // 2,
+                         (about_window.winfo_screenheight() - about_height) // 2)
+        about_window.geometry(f"{about_width}x{about_height}+{start_pos[0]}+{start_pos[1]}")
+
+        def close_about():
+            remember_window_position("about", about_window)
+            about_window.destroy()
         main_frame = ttk.Frame(about_window, padding="20")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -1928,7 +2295,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.3.6") + " \n"
+            t("about_version", version="1.3.5") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
@@ -1945,10 +2312,10 @@ def on_about(icon, item):
         link_label.pack()
         link_label.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/tawiss-cloud/TA-toggle"))
 
-        close_button = ttk.Button(main_frame, text=t("btn_close"), command=about_window.destroy)
+        close_button = ttk.Button(main_frame, text=t("btn_close"), command=close_about)
         close_button.pack(pady=10)
 
-        about_window.protocol("WM_DELETE_WINDOW", about_window.destroy)
+        about_window.protocol("WM_DELETE_WINDOW", close_about)
         about_window.focus_force()
 
     tk_queue.put(('window', create_about_window))
