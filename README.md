@@ -12,6 +12,7 @@ Python-утилита для автоматического переключен
 - Обнаружение HDR
 - Автоматическое переключение режима локального затемнения и яркости
 - Ручное переключение режимов (Ctrl + Alt + Z)
+- Пользовательские исключения: ручное добавление приложений и процессов
 
 ## Управление
 
@@ -39,6 +40,7 @@ The program allows you to manually or automatically switch between Standard and 
 - HDR detection
 - Automatic switching of local dimming and brightness settings
 - Manual mode switching (Ctrl + Alt + Z)
+- Custom exclusions: manually add applications and processes
 
 ## Controls
 ### Ctrl + Alt + Z
