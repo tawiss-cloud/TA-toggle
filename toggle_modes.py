@@ -251,6 +251,12 @@ def get_default_modes():
         {"name": t("mode_gaming_name"), "local_dimming": 3, "brightness": 36}
     ]
 
+def get_mode_name(index):
+    """Название режима по индексу, всегда на текущем языке.
+    Не берём из modes: имена там закешированы на момент старта и не меняются
+    при смене языка."""
+    return t("mode_standard_name") if index == 0 else t("mode_gaming_name")
+
 def get_local_dimming_options():
     return [
         {"value": 2, "name": t("dimming_off"), "description": t("dimming_off_desc")},
@@ -890,10 +896,10 @@ def update_tray_title(mode_index, process_name=None):
     try:
         if process_name:
             tray_icon.title = t("tray_title_with_process",
-                                mode=modes[mode_index]['name'],
+                                mode=get_mode_name(mode_index),
                                 process=process_name)
         else:
-            tray_icon.title = t("tray_title", mode=modes[mode_index]['name'])
+            tray_icon.title = t("tray_title", mode=get_mode_name(mode_index))
     except Exception as e:
         log(f"Ошибка обновления подсказки трея: {e}")
 
@@ -1202,7 +1208,7 @@ def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
             tray_process = None
     update_tray_title(current_mode_index, tray_process)
 
-    show_notification(t("notif_mode", mode=modes[current_mode_index]['name']))
+    show_notification(t("notif_mode", mode=get_mode_name(current_mode_index)))
     return True
 
 def check_active_game_exclusion(newly_added):
@@ -1629,7 +1635,7 @@ def toggle_mode(icon=None):
 
             if apply_mode_by_index(new_mode_index, force_hdr_check=True):
                 last_switch_time = now
-                mode_name = modes[current_mode_index]["name"]
+                mode_name = get_mode_name(current_mode_index)
 
                 if new_mode_index == 0:
                     # Ручное переключение на стандартный
@@ -2295,7 +2301,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.3.5") + " \n"
+            t("about_version", version="1.4.0") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
@@ -2416,7 +2422,7 @@ if __name__ == "__main__":
     threading.Thread(target=lambda: hotkey_listener(tray_icon), daemon=True).start()
     threading.Thread(target=monitor_loop, daemon=True).start()
 
-    print(t("console_started", mode=modes[current_mode_index]['name']))
+    print(t("console_started", mode=get_mode_name(current_mode_index)))
     if auto_switch_enabled:
         print(t("console_auto_active"))
         if media_players_enabled:
