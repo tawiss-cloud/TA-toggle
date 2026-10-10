@@ -1,5 +1,7 @@
 # TA toggle (Titan Army Monitor Switcher)
 
+<img width="562" height="859" alt="изображение" src="https://github.com/user-attachments/assets/cc37644a-aaba-4922-b92a-3353f2414b42" />
+
 Python-утилита для автоматического переключения настроек мониторов Titan Army.
 
 Программа позволяет вручную или автоматически переключаться между "стандартным" и "игровым" пресетами яркости и локального затеменения монитора в зависимости от того, запущена ли игра или поддерживаемый медиаплеер.
@@ -29,6 +31,8 @@ Python-утилита для автоматического переключен
 MIT
 
 # TA toggle (Titan Army Monitor Switcher)
+
+<img width="562" height="859" alt="изображение" src="https://github.com/user-attachments/assets/d4e64380-5a40-4a1e-a30a-2bf0f2d1fa9a" />
 
 Python utility for automatically switching settings on Titan Army monitors.
 
