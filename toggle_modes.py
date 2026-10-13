@@ -703,15 +703,34 @@ def is_excluded_process(process_name):
     name = process_name.lower()
     return name in [p.lower() for p in EXCLUDED_PROCESSES] or name in custom_excluded_processes
 
+def _win32_window_origin(win):
+    """Реальная позиция окна от самой Windows (GetWindowRect внешней рамки) или None.
+    Не зависит от кэша Tk: geometry() у некоторых окон остаётся прежним после перетаскивания."""
+    try:
+        hwnd = user32.GetParent(win.winfo_id()) or win.winfo_id()
+        rect = RECT()
+        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return rect.left, rect.top
+    except Exception:
+        pass
+    return None
+
 def get_window_origin(win):
-    """Левый верхний угол окна в тех же координатах, что принимает geometry()."""
+    """Левый верхний угол окна в тех же координатах, что принимает geometry().
+    Если Windows и Tk расходятся – верим Windows (она знает, где окно на самом деле) и пишем в лог."""
+    tk_pos = None
     try:
         m = re.match(r"\d+x\d+\+(-?\d+)\+(-?\d+)", win.geometry())
         if m:
-            return int(m.group(1)), int(m.group(2))
+            tk_pos = (int(m.group(1)), int(m.group(2)))
     except Exception:
         pass
-    return win.winfo_x(), win.winfo_y()
+    if tk_pos is None:
+        tk_pos = (win.winfo_x(), win.winfo_y())
+    win_pos = _win32_window_origin(win)
+    if win_pos is not None and win_pos != tk_pos:
+        return win_pos
+    return tk_pos
 
 def get_window_start_position(key, width, height):
     """Сохранённая позиция окна, приведённая к видимой области экранов, или None."""
@@ -2569,6 +2588,10 @@ def on_about(icon, item):
         close_button.pack(pady=10)
 
         about_window.protocol("WM_DELETE_WINDOW", close_about)
+        # Позицию применяем ещё раз, уже после создания виджетов (как в окне настроек): первый вызов
+        # geometry() выше Windows может проигнорировать и поставить окно на своё каскадное место.
+        about_window.update_idletasks()
+        about_window.geometry(f"{about_width}x{about_height}+{start_pos[0]}+{start_pos[1]}")
         about_window.focus_force()
 
     tk_queue.put(('window', create_about_window))
