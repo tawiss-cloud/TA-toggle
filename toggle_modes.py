@@ -12,12 +12,30 @@ import json
 import os
 import re
 import queue
+import sys
 import webbrowser
 
 # ===================== НАСТРОЙКИ =====================
 advanced_settings_enabled = False
 debug_enabled = False
-DEBUG_LOG_FILE = "monitor_debug.log"
+
+# Пути к настройкам и логу — от папки скрипта/исполняемого файла, а не от
+# текущей рабочей директории. Иначе при автозапуске с другой cwd настройки
+# (исключения и т.д.) «теряются»: читается другой monitor_settings.json.
+if getattr(sys, 'frozen', False):
+    _APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    _APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DEBUG_LOG_FILE = os.path.join(_APP_DIR, "monitor_debug.log")
+
+# Номер сборки Windows нужен только в запасном пути (когда V2-запрос HDR недоступен):
+# чтобы понять, возможно ли на этой системе автоуправление цветом (ACM), из-за которого
+# флаг V1 бывает включён и без HDR, а также для записи в лог.
+try:
+    _WIN_BUILD = sys.getwindowsversion().build
+except Exception:
+    _WIN_BUILD = 0
+_WIN11_22H2_BUILD = 22621  # с этой сборки в Windows 11 есть «Автоматическое управление цветом» (ACM)
 
 # ===================== ЛОКАЛИЗАЦИЯ / LOCALIZATION =====================
 SUPPORTED_LANGUAGES = ["ru", "en"]
@@ -53,6 +71,7 @@ TRANSLATIONS = {
         "notif_settings_saved": "Настройки сохранены",
         "notif_error": "Ошибка: {error}",
         "notif_save_error": "Ошибка сохранения: {error}",
+        "notif_save_failed": "Не удалось сохранить настройки (действуют до перезапуска): {error}",
         "notif_delay_field_error": "Ошибка в поле задержки: {error}",
         "notif_restart_required": "Язык изменён. Перезапустите программу, чтобы применить изменения полностью.",
         "err_brightness_range": "Яркость должна быть от 0 до 100",
@@ -153,6 +172,7 @@ TRANSLATIONS = {
         "notif_settings_saved": "Settings saved",
         "notif_error": "Error: {error}",
         "notif_save_error": "Save error: {error}",
+        "notif_save_failed": "Could not save settings (active until restart): {error}",
         "notif_delay_field_error": "Error in delay field: {error}",
         "notif_restart_required": "Language changed. Restart the program to fully apply the change.",
         "err_brightness_range": "Brightness must be between 0 and 100",
@@ -324,8 +344,15 @@ VCP_COLOR_PRESET = 0x14
 # ===================== HDR через Windows (Display Config API) =====================
 # Для всех сценариев, КРОМЕ медиаплеера: плееры с HDR passthrough шлют HDR мимо
 # композитора Windows, этот флаг у них не меняется (для них – яркость по DDC/CI).
+#
+# V1 (type 9) смотрит только бит advancedColorEnabled. На Windows 11 с включённым
+# «Автоматическим управлением цветом» (ACM) он может быть TRUE и без HDR.
+# V2 (type 15, насколько известно, Win11 24H2+) добавляет activeColorMode, где HDR=2, WCG=1, SDR=0 –
+# надёжный признак именно HDR.
 _DC_GET_SOURCE_NAME = 1
 _DC_GET_ADVANCED_COLOR_INFO = 9
+_DC_GET_ADVANCED_COLOR_INFO_2 = 15
+_DISPLAYCONFIG_ADVANCED_COLOR_MODE_HDR = 2
 _QDC_ONLY_ACTIVE_PATHS = 0x00000002
 _CCHDEVICENAME = 32
 
@@ -366,6 +393,11 @@ class _DC_HEADER(ctypes.Structure):
 class _DC_ADVANCED_COLOR_INFO(ctypes.Structure):
     _fields_ = [("header", _DC_HEADER), ("value", ctypes.wintypes.UINT),
                 ("colorEncoding", ctypes.wintypes.UINT), ("bitsPerColorChannel", ctypes.wintypes.UINT)]
+
+class _DC_ADVANCED_COLOR_INFO_2(ctypes.Structure):
+    _fields_ = [("header", _DC_HEADER), ("value", ctypes.wintypes.UINT),
+                ("colorEncoding", ctypes.wintypes.UINT), ("bitsPerColorChannel", ctypes.wintypes.UINT),
+                ("activeColorMode", ctypes.wintypes.UINT)]
 
 class _DC_SOURCE_DEVICE_NAME(ctypes.Structure):
     _fields_ = [("header", _DC_HEADER),
@@ -472,13 +504,24 @@ def _dc_target_path_for_monitor(index, paths):
     return paths[max(0, min(index, len(paths) - 1))], False
 
 
-def _query_windows_hdr():
-    """"hdr"/"ok" по системному флагу HDR; если определить не удалось – бросает исключение."""
-    paths = _dc_active_paths()
-    if not paths:
-        raise OSError("активные дисплеи не найдены")
-    idx = monitor_index if monitor_index is not None else 0
-    path, by_name = _dc_target_path_for_monitor(idx, paths)
+def _try_advanced_color_v2(path):
+    """V2 (GET_ADVANCED_COLOR_INFO_2): активный режим цвета – HDR=2, WCG=1 (автоуправление
+    цветом), SDR=0. Насколько известно, появился в Windows 11 24H2, на более ранних сборках
+    вызов возвращает ошибку. Возвращает ('hdr'/'ok', None) или (None, код_ошибки)."""
+    req2 = _DC_ADVANCED_COLOR_INFO_2()
+    req2.header.type = _DC_GET_ADVANCED_COLOR_INFO_2
+    req2.header.size = ctypes.sizeof(_DC_ADVANCED_COLOR_INFO_2)
+    req2.header.adapterId = path.targetInfo.adapterId
+    req2.header.id = path.targetInfo.id
+    ret = _dc_user32.DisplayConfigGetDeviceInfo(ctypes.byref(req2.header))
+    if ret != 0:
+        return None, ret
+    return ("hdr" if req2.activeColorMode == _DISPLAYCONFIG_ADVANCED_COLOR_MODE_HDR else "ok"), None
+
+
+def _try_advanced_color_v1(path):
+    """V1 (GET_ADVANCED_COLOR_INFO): (advancedColorEnabled, value). Бит «включён» равен TRUE и при
+    HDR, и при «Автоматическом управлении цветом» (WCG), поэтому по нему одному HDR не определить."""
     req = _DC_ADVANCED_COLOR_INFO()
     req.header.type = _DC_GET_ADVANCED_COLOR_INFO
     req.header.size = ctypes.sizeof(_DC_ADVANCED_COLOR_INFO)
@@ -486,22 +529,49 @@ def _query_windows_hdr():
     req.header.id = path.targetInfo.id
     ret = _dc_user32.DisplayConfigGetDeviceInfo(ctypes.byref(req.header))
     if ret != 0:
-        raise OSError(f"DisplayConfigGetDeviceInfo(advanced color): {ret}")
-    enabled = bool(req.value & 0x2)
+        raise OSError(f"DisplayConfigGetDeviceInfo(advanced color V1): {ret}")
+    return bool(req.value & 0x2), req.value
+
+
+def _query_windows_hdr():
+    """"hdr" / "ok" / "unsure" по системному режиму цвета; если определить не удалось – бросает исключение.
+    Без чтения монитора:
+      - V2 есть (Win11 24H2+) – однозначный ответ: SDR, WCG (автоуправление цветом) и HDR различаются;
+      - V2 нет, advanced color выключен – "ok" (нет ни HDR, ни ACM);
+      - V2 нет, включён, сборка без ACM (старше Win11 22H2) – "hdr".
+    "unsure" – единственный неоднозначный случай: сборка с ACM, но без V2, флаг включён – это HDR
+    или просто автоуправление цветом. Вызывающий код уточняет его по яркости (одно чтение монитора)."""
+    global last_windows_hdr_detail
+    paths = _dc_active_paths()
+    if not paths:
+        raise OSError("активные дисплеи не найдены")
+    idx = monitor_index if monitor_index is not None else 0
+    path, by_name = _dc_target_path_for_monitor(idx, paths)
     if not by_name:
         log("HDR (Windows): монитор сопоставлен по индексу, а не по имени (запасной вариант)")
-    return "hdr" if enabled else "ok"
+
+    result, err = _try_advanced_color_v2(path)
+    if err is None:
+        last_windows_hdr_detail = "V2"
+        return result
+
+    enabled, value = _try_advanced_color_v1(path)
+    last_windows_hdr_detail = f"V2 недоступен (ret={err}), V1 value=0x{value:x}, сборка {_WIN_BUILD}"
+    if not enabled:
+        return "ok"
+    if _WIN_BUILD < _WIN11_22H2_BUILD:
+        return "hdr"
+    return "unsure"
 
 current_mode_index = 0
 last_switch_time = 0
 DELAY = 1
 
-# Ручной режим
 manual_override_active = False
 manual_override_waiting = False
 
 modes = []
-SETTINGS_FILE = "monitor_settings.json"
+SETTINGS_FILE = os.path.join(_APP_DIR, "monitor_settings.json")
 
 monitor_index = None
 hotkey_thread_id = None
@@ -526,19 +596,32 @@ game_window_hwnd = None
 media_timer = None
 media_timer_lock = threading.Lock()
 last_reported_state = None
-last_excluded_process_logged = None  # чтобы не спамить лог одним и тем же исключённым процессом
+last_excluded_process_logged = None
 
 # Защищает состояние игровой/медиа-сессии от гонки между monitor_loop(),
 # delayed_media_switch() и toggle_mode() (разные потоки).
 game_state_lock = threading.Lock()
 
-# Кэш HDR хранится отдельно для каждого способа проверки ("brightness" /
-# "windows"), чтобы результат одного способа не использовался для другого.
+# Кэш HDR хранится отдельно для каждого способа проверки ("windows" – по системному режиму цвета,
+# "media" – для медиаплеера, "brightness" – только яркость), чтобы результат одного способа не
+# использовался для другого. Значение: (результат, время реальной проверки).
 hdr_method_cache = {}
+# Последняя ошибка Windows-проверки (одинаковую пишем в лог один раз) и подробности последней
+# успешной проверки (версия API, сырое значение флагов) – для строки лога.
+last_windows_hdr_error = None
+last_windows_hdr_detail = ""
 # True, пока медиа-сессия не завершена (стандартный режим не восстановлен) –
 # по нему выбирается способ проверки HDR, когда окна уже нет.
 last_session_media = False
 HDR_CACHE_TIME = 2
+# Окно коалесцирования force_refresh: одна логическая операция (нажатие
+# хоткея) зовёт is_hdr_enabled(force_refresh=True) несколько раз подряд из
+# разных мест (hotkey_listener → toggle_mode → sync_current_mode →
+# apply_mode_by_index). Без коалесцирования это N одинаковых строк в логе и
+# N лишних чтений монитора. DELAY хоткея = 1 сек, так что 0.5 сек безопасно:
+# два разных нажатия в это окно всё равно не попадут. Возраст считается по
+# записи кэша ЭТОГО способа проверки, а не по любой последней проверке.
+HDR_FORCE_COALESCE_TIME = 0.5
 hdr_cache_lock = threading.Lock()
 
 # Возврат в стандартный режим не кэшируется по сессии и при блокировке опрашивает монитор
@@ -566,8 +649,11 @@ game_switch_attempt_hwnd = None
 standard_return_attempt_logged = False
 standard_return_blocked_logged = False
 
-# Последний медиаплеер, для которого уже выводили в лог "Медиаплеер X –
-# игровой режим" – чтобы не дублировать при каждой итерации.
+# Последний медиаплеер, для которого уже писали в лог "Медиаплеер X – игровой
+# режим". Сбрасывается только при реальной смене сессии: закрытие игрового
+# окна (monitor_loop), ручное переключение режима (toggle_mode). НЕ
+# сбрасывается в конце is_game_window, иначе лог дублировался бы при каждом
+# сворачивании/разворачивании одного и того же плеера.
 last_media_player_logged = None
 
 # Имя процесса, которое сейчас показано в подсказке трея (только для игрового
@@ -579,21 +665,19 @@ MEDIA_PLAYER_PROCESSES = [
     "mpc-hc.exe", "mpc-be.exe", "mpc-hc64.exe", "mpc-be64.exe",
     "vlc.exe", "potplayer.exe", "kmplayer.exe", "mediaplayerclassic.exe"
 ]
+_MEDIA_PLAYER_NAMES = {m.lower() for m in MEDIA_PLAYER_PROCESSES}
 
 EXCLUDED_PROCESSES = [
     "wallpaper32.exe", "wallpaper64.exe", "explorer.exe", "StartMenuExperienceHost.exe",
     "cmd.exe", "powershell.exe", "notepad.exe", "mspaint.exe",
-    # Браузеры: Chromium-based
     "chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "vivaldi.exe", "chromium.exe",
     "browser.exe", "yandex.exe", "whale.exe", "thorium.exe", "iron.exe", "epic.exe",
     "dragon.exe", "slimjet.exe", "torch.exe", "kinza.exe", "amigo.exe", "sidekick.exe",
     "wavebox.exe", "arc.exe", "duckduckgo.exe", "avastbrowser.exe", "avgbrowser.exe",
     "ccleanerbrowser.exe", "ucbrowser.exe", "maxthon.exe", "360chrome.exe", "360se.exe",
     "qqbrowser.exe", "sogouexplorer.exe", "baidubrowser.exe",
-    # Браузеры: Gecko-based
     "firefox.exe", "waterfox.exe", "librewolf.exe", "floorp.exe", "zen.exe",
     "palemoon.exe", "basilisk.exe", "seamonkey.exe", "k-meleon.exe",
-    # Прочие браузеры
     "iexplore.exe", "falkon.exe", "midori.exe", "otter-browser.exe", "qutebrowser.exe",
     "dooble.exe", "slimbrowser.exe", "lunascape.exe"
 ]
@@ -652,8 +736,7 @@ def remember_window_position(key, win):
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         data['window_positions'] = window_positions
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        write_json_atomic(SETTINGS_FILE, data)
     except Exception as e:
         log(f"Ошибка сохранения позиции окна: {e}")
 
@@ -756,7 +839,26 @@ def load_settings():
     if not modes_loaded:
         modes = get_default_modes()
 
+# Текст последней ошибки save_settings() – чтобы вызывающий код мог показать пользователю причину.
+last_save_error = ""
+
+def write_json_atomic(path, data):
+    """Пишет JSON во временный файл рядом и подменяет им целевой: оборванная запись (сбой, нехватка места)
+    не оставит обрезанный файл настроек."""
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
 def save_settings():
+    global last_save_error
     try:
         data = {
             'language': current_language,
@@ -772,38 +874,39 @@ def save_settings():
             'hotkey_modifiers': HOTKEY_MODIFIERS,
             'hotkey_vk': HOTKEY_VK
         }
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        write_json_atomic(SETTINGS_FILE, data)
+        last_save_error = ""
         log("Настройки сохранены")
         return True
     except Exception as e:
+        last_save_error = str(e)
         log(f"Ошибка сохранения: {e}")
         return False
 
 def safe_monitor_operation(operation, monitor_idx=None):
-    monitors = get_monitors()
-    if not monitors:
-        log("Мониторы не найдены")
-        return None
-    target_idx = monitor_idx if monitor_idx is not None else monitor_index
-    if target_idx is None or target_idx >= len(monitors):
-        log(f"Неверный индекс монитора: {target_idx}")
-        return None
-    monitor = None
+    # get_monitors() может бросить исключение при перечислении мониторов –
+    # поэтому весь блок, включая его, находится под try.
     try:
+        monitors = get_monitors()
+        if not monitors:
+            log("Мониторы не найдены")
+            return None
+        target_idx = monitor_idx if monitor_idx is not None else monitor_index
+        if target_idx is None or target_idx >= len(monitors):
+            log(f"Неверный индекс монитора: {target_idx}")
+            return None
         monitor = monitors[target_idx]
         # monitor_io_lock сериализует реальный обмен по DDC/CI между
         # потоками (см. её определение выше, зачем).
         with monitor_io_lock:
             with monitor:
-                result = operation(monitor)
-                return result
+                return operation(monitor)
     except Exception as e:
         log(f"Ошибка операции с монитором: {e}")
         return None
-    finally:
-        if monitor:
-            monitor = None
+
+def _is_media_player_name(name):
+    return bool(name) and name.lower() in _MEDIA_PLAYER_NAMES
 
 def _is_media_player_window(hwnd):
     if not hwnd or not media_players_enabled:
@@ -812,23 +915,26 @@ def _is_media_player_window(hwnd):
         name = get_process_name(hwnd)
     except Exception:
         return False
-    return bool(name) and name.lower() in [m.lower() for m in MEDIA_PLAYER_PROCESSES]
+    return _is_media_player_name(name)
 
 def resolve_hdr_method(hwnd=None):
-    """Способ проверки HDR: "brightness" (яркость по DDC/CI), если задействован медиаплеер
-    (окно hwnd, активное/запомненное окно или незавершённая медиа-сессия), иначе "windows"."""
+    """Способ проверки HDR: "media" – если задействован медиаплеер (окно hwnd, активное/запомненное
+    окно или незавершённая медиа-сессия), иначе "windows". Подробности – в _measure_hdr()."""
     if hwnd is not None:
-        return "brightness" if _is_media_player_window(hwnd) else "windows"
+        return "media" if _is_media_player_window(hwnd) else "windows"
     if _is_media_player_window(user32.GetForegroundWindow()):
-        return "brightness"
+        return "media"
     gw = game_window_hwnd
     if gw is not None and user32.IsWindow(gw) and _is_media_player_window(gw):
-        return "brightness"
+        return "media"
     if last_session_media:
-        return "brightness"
+        return "media"
     return "windows"
 
 def _query_brightness_hdr():
+    """Одно реальное чтение яркости по DDC/CI: ровно 100 – признак HDR (монитор блокирует яркость).
+    Это самый дорогой и самый «шумный» способ (шина DDC/CI, ложное срабатывание при яркости режима 100),
+    поэтому он используется, только когда Windows не может ответить – см. _measure_hdr()."""
     def check_hdr(monitor):
         try:
             current_brightness, max_brightness = monitor.vcp.get_vcp_feature(VCP_BRIGHTNESS)
@@ -839,32 +945,59 @@ def _query_brightness_hdr():
     result = safe_monitor_operation(check_hdr)
     return result if result is not None else "error"
 
+def _measure_hdr(method):
+    """Реальная проверка HDR: (результат "hdr"/"ok"/"error", пояснение для лога). Вызывать под hdr_cache_lock.
+    Windows (системный режим цвета) отвечает без обращения к монитору, поэтому спрашиваем его первым,
+    а яркость читаем, только когда без неё нельзя:
+      "windows" – игры и обычные окна: яркость нужна лишь если Windows ответил "unsure" (сборка с
+                  автоуправлением цветом без V2: флаг включён, но это может быть не HDR) или недоступен;
+      "media"   – медиаплеер: если Windows говорит "hdr" – монитор не трогаем; иначе читаем яркость,
+                  потому что плеер может включать HDR в обход Windows (проброс через драйвер);
+      "brightness" – только яркость (явный запрос)."""
+    global last_windows_hdr_error
+    if method == "brightness":
+        return _query_brightness_hdr(), "яркость"
+    try:
+        win = _query_windows_hdr()
+        last_windows_hdr_error = None
+    except Exception as e:
+        # Одинаковую ошибку пишем в лог один раз, а не при каждой проверке.
+        if str(e) != last_windows_hdr_error:
+            log(f"HDR (Windows): ошибка проверки ({e}) – используем проверку по яркости")
+            last_windows_hdr_error = str(e)
+        return _query_brightness_hdr(), "яркость, Windows недоступен"
+    detail = f"Windows, {last_windows_hdr_detail}" if last_windows_hdr_detail else "Windows"
+    if method == "media":
+        if win == "hdr":
+            return "hdr", detail
+        return _query_brightness_hdr(), f"{detail} → яркость (HDR-проброс плеера)"
+    if win == "unsure":
+        return _query_brightness_hdr(), f"{detail} → яркость (HDR или автоуправление цветом)"
+    return win, detail
+
 def is_hdr_enabled(force_refresh=False, hwnd=None, method=None):
-    if method is None:
-        method = resolve_hdr_method(hwnd)
+    """"hdr" / "ok" / "error". Результат кэшируется на HDR_CACHE_TIME отдельно для каждого способа."""
+    requested = method if method is not None else resolve_hdr_method(hwnd)
     with hdr_cache_lock:
         now = time.time()
-        cached = hdr_method_cache.get(method)
-        if force_refresh or cached is None or (now - cached[1]) >= HDR_CACHE_TIME:
-            if method == "windows":
-                try:
-                    result = _query_windows_hdr()
-                except Exception as e:
-                    log(f"HDR (Windows): ошибка проверки ({e}) – используем проверку по яркости")
-                    method = "brightness"
-                    result = _query_brightness_hdr()
-            else:
-                result = _query_brightness_hdr()
-            hdr_method_cache[method] = (result, now)
-            log(f"HDR проверка [{method}]: {result}")
-        else:
-            result = cached[0]
+        cached = hdr_method_cache.get(requested)
+        # force_refresh уважаем, но не чаще, чем раз в HDR_FORCE_COALESCE_TIME (по записи кэша ЭТОГО
+        # способа): одна логическая операция (нажатие хоткея) зовёт эту функцию несколько раз подряд.
+        coalesced_force = force_refresh and (cached is None or (now - cached[1]) >= HDR_FORCE_COALESCE_TIME)
+        if not (coalesced_force or cached is None or (now - cached[1]) >= HDR_CACHE_TIME):
+            return cached[0]
+        # Результат кладём под ЗАПРОШЕННЫЙ способ: иначе при сбое Windows-проверки запись не
+        # появляется, кэш не срабатывает и каждый вызов идёт в монитор.
+        result, how = _measure_hdr(requested)
+        hdr_method_cache[requested] = (result, now)
+        log(f"HDR проверка [{requested}]: {result} ({how})")
         return result
 
-def is_hdr_blocked(force_refresh=False, hwnd=None):
+def is_hdr_blocked(force_refresh=False, hwnd=None, method=None):
     """True, если переключение нужно заблокировать: HDR подтверждён ("hdr") или состояние не прочитано ("error").
-    В сессионный кэш уместно запоминать только "hdr". Способ проверки – по hwnd (см. resolve_hdr_method)."""
-    result = is_hdr_enabled(force_refresh=force_refresh, hwnd=hwnd)
+    В сессионный кэш уместно запоминать только "hdr". Способ проверки – по hwnd (см. resolve_hdr_method)
+    или явно через method."""
+    result = is_hdr_enabled(force_refresh=force_refresh, hwnd=hwnd, method=method)
     return result in ("hdr", "error"), result
 
 def reset_confirmed_hdr():
@@ -903,7 +1036,7 @@ def update_tray_title(mode_index, process_name=None):
     except Exception as e:
         log(f"Ошибка обновления подсказки трея: {e}")
 
-def show_notification(message):
+def show_notification(message, error=False):
     def create_notification():
         try:
             notification = tk.Toplevel()
@@ -914,19 +1047,20 @@ def show_notification(message):
             screen_width = notification.winfo_screenwidth()
             screen_height = notification.winfo_screenheight()
             window_width = 350
-            window_height = 70
+            window_height = 110 if error else 70
             x = screen_width - window_width - 10
             y = screen_height - window_height - 50
             notification.geometry(f'{window_width}x{window_height}+{x}+{y}')
-            message_label = tk.Label(notification, text=message, fg='#4CAF50', bg='#2b2b2b',
-                                     font=('Arial', 11, 'bold'))
+            message_label = tk.Label(notification, text=message, fg='#F44336' if error else '#4CAF50',
+                                     bg='#2b2b2b', font=('Arial', 11, 'bold'),
+                                     wraplength=window_width - 20, justify='center')
             message_label.pack(expand=True)
             def close_notification():
                 try:
                     notification.destroy()
                 except:
                     pass
-            notification.after(2000, close_notification)
+            notification.after(6000 if error else 2000, close_notification)
         except Exception as e:
             log(f"Ошибка уведомления: {e}")
     tk_queue.put(('notification', create_notification))
@@ -951,18 +1085,34 @@ def get_current_monitor_settings():
 
 def sync_current_mode():
     global current_mode_index
-    # Первое обращение к монитору за сессию часто неудачно (DDC/CI ещё не готов) –
-    # нужны повторы, иначе ошибочно получим current_mode_index=0.
+    # Если HDR активен, яркость читается как 100 и не отражает режим SDR.
+    try:
+        if is_hdr_enabled(force_refresh=True) == "hdr":
+            log("HDR активен при старте – синхронизация режима по яркости пропущена (считаем стандартным)")
+            current_mode_index = 0
+            return
+    except Exception as e:
+        log(f"Не удалось проверить HDR при старте: {e}")
+
+    # При старте это первое обращение к монитору за всю сессию – DDC/CI чаще всего «спотыкается» именно
+    # на нём (контроллер ещё не готов сразу после открытия соединения). Без повторов единственная неудача
+    # давала бы current_mode_index=0, даже если монитор реально в игровом режиме.
     brightness = local_dimming = None
     for attempt in range(3):
-        brightness, local_dimming = get_current_monitor_settings()
+        result = get_current_monitor_settings()
+        if result is None:
+            log(f"get_current_monitor_settings вернул None (попытка {attempt+1}/3)")
+            if attempt < 2:
+                time.sleep(0.5)
+            continue
+        brightness, local_dimming = result
         if brightness is not None and local_dimming is not None:
             break
         log(f"Не удалось определить текущий режим при старте (попытка {attempt+1}/3)")
         if attempt < 2:
             time.sleep(0.5)
     if brightness is None or local_dimming is None:
-        log("Режим при старте не определён после 3 попыток – считаем стандартным")
+        log("Режим при старте не определён – считаем стандартным")
         current_mode_index = 0
         return
     if (brightness == modes[0]["brightness"] and local_dimming == modes[0]["local_dimming"]):
@@ -976,7 +1126,13 @@ def sync_current_mode():
 
 def find_titan_army_monitor():
     global monitor_index
-    monitors = get_monitors()
+    # get_monitors() может бросить исключение при перечислении – перехватываем,
+    # иначе упадёт вызывающий код (__main__ или toggle_mode).
+    try:
+        monitors = get_monitors()
+    except Exception as e:
+        log(f"Ошибка перечисления мониторов: {e}")
+        return False
     log(f"Найдено мониторов: {len(monitors)}")
     for i, monitor in enumerate(monitors):
         try:
@@ -1082,8 +1238,13 @@ def retry_brightness_only(mode_index, attempts=5, delay=0.5):
         if current_mode_index != mode_index:
             log("Дожим яркости отменён: режим уже изменился")
             return
-        # Проверяем текущую яркость
-        current_brightness, _ = get_current_monitor_settings()
+        # get_current_monitor_settings() может вернуть None (монитор недоступен) –
+        # распаковка в две переменные дала бы TypeError.
+        result = get_current_monitor_settings()
+        if result is None:
+            log(f"Дожим яркости: монитор недоступен (попытка {attempt+1}/{attempts})")
+            continue
+        current_brightness, _ = result
         if current_brightness is not None and current_brightness == mode["brightness"]:
             log(f"Яркость уже {mode['brightness']}, дожим не требуется")
             return
@@ -1106,8 +1267,12 @@ def retry_dimming_only(mode_index, attempts=5, delay=0.5):
         if current_mode_index != mode_index:
             log("Дожим LD отменён: режим уже изменился")
             return
-        # Проверяем текущее значение local dimming
-        _, current_local_dimming = get_current_monitor_settings()
+        # См. комментарий в retry_brightness_only.
+        result = get_current_monitor_settings()
+        if result is None:
+            log(f"Дожим LD: монитор недоступен (попытка {attempt+1}/{attempts})")
+            continue
+        _, current_local_dimming = result
         if current_local_dimming is not None and current_local_dimming == mode["local_dimming"]:
             log(f"LD уже {mode['local_dimming']}, дожим не требуется")
             return
@@ -1190,8 +1355,8 @@ def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
     # Хотя бы один параметр выставлен – режим считаем применённым, недостающий дожимаем в фоне.
     current_mode_index = index
     if index == 0:
-        last_session_media = False  # стандартный режим восстановлен – медиа-сессия завершена
-    last_excluded_process_logged = None  # после смены режима разрешаем залогировать исключённый процесс заново
+        last_session_media = False
+    last_excluded_process_logged = None
     if not success_brightness:
         threading.Thread(target=retry_brightness_only, args=(index,), daemon=True).start()
     if not success_dimming:
@@ -1211,16 +1376,56 @@ def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
     show_notification(t("notif_mode", mode=get_mode_name(current_mode_index)))
     return True
 
+def reset_manual_override_state():
+    """Сбрасывает ручной режим (вызывать под game_state_lock). Режим монитора не трогает: если он остался
+    игровым, ставится долг на возврат в стандартный – monitor_loop выполнит его, когда автоматика работает
+    (если к тому времени игра активна, долг гасится при её обнаружении). True, если ручной режим был активен."""
+    global manual_override_active, manual_override_waiting, game_window_hwnd, last_reported_state
+    global game_counter, standard_restore_pending
+    global standard_return_attempt_logged, standard_return_blocked_logged, standard_return_last_attempt_time
+    if not (manual_override_active or manual_override_waiting):
+        return False
+    manual_override_active = False
+    manual_override_waiting = False
+    game_window_hwnd = None
+    last_reported_state = None
+    game_counter = 0
+    if current_mode_index != 0:
+        standard_restore_pending = True
+        standard_return_attempt_logged = False
+        standard_return_blocked_logged = False
+        standard_return_last_attempt_time = 0.0
+    log("Ручной режим сброшен (изменена настройка автопереключения)")
+    return True
+
+def on_auto_switch_changed(enabled):
+    """Реакция на смену настройки автопереключения. Вызывать из отдельного потока, не из UI: берёт
+    game_state_lock, который monitor_loop может держать на время обмена с монитором.
+    Ручной режим относится к прежнему состоянию автоматики: если его оставить, после повторного включения
+    monitor_loop продолжит ждать закрытия «ручного» окна и пропускать обычное определение игр – со стороны
+    это выглядит как неработающая галочка. Таймер медиаплеера отменяем: при выключенной автоматике он не
+    должен сменить режим."""
+    global media_timer, last_session_media
+    with game_state_lock:
+        with media_timer_lock:
+            if media_timer is not None:
+                media_timer.cancel()
+                media_timer = None
+        reset_manual_override_state()
+        if not enabled and last_session_media:
+            last_session_media = False
+            log("Авто-переключение выключено – сброс last_session_media")
+
 def check_active_game_exclusion(newly_added):
     """Если текущая игровая сессия была запущена автоматически процессом, который
     только что добавлен в исключения, вернуть стандартный режим.
-    Ручной режим (manual_override_active) не трогаем – там переключение сделал пользователь."""
+    Ручной режим (manual_override_active) не трогаем."""
     def worker():
         global game_window_hwnd, last_reported_state, game_counter
         global game_switch_attempt_logged, game_switch_attempt_hwnd
         global standard_restore_pending, standard_return_attempt_logged
         global standard_return_blocked_logged, standard_return_last_attempt_time
-        global media_timer
+        global media_timer, last_media_player_logged
 
         with game_state_lock:
             if manual_override_active:
@@ -1245,6 +1450,7 @@ def check_active_game_exclusion(newly_added):
             game_counter = 0
             game_switch_attempt_logged = False
             game_switch_attempt_hwnd = None
+            last_media_player_logged = None
             reset_confirmed_hdr()
             standard_restore_pending = False
             standard_return_attempt_logged = False
@@ -1288,15 +1494,15 @@ def list_windowed_processes():
 
     def callback(hwnd, lparam):
         try:
-            if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4):  # GW_OWNER
+            if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4):
                 return True
             length = user32.GetWindowTextLengthW(hwnd)
             if length == 0:
                 return True
-            ex_style = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
-            if (ex_style & 0x00000080) and not (ex_style & 0x00040000):  # TOOLWINDOW без APPWINDOW
+            ex_style = user32.GetWindowLongW(hwnd, -20)
+            if (ex_style & 0x00000080) and not (ex_style & 0x00040000):
                 return True
-            cloaked = ctypes.wintypes.DWORD(0)  # окна UWP-приложений, скрытые на другом рабочем столе
+            cloaked = ctypes.wintypes.DWORD(0)
             ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
             if cloaked.value:
                 return True
@@ -1355,17 +1561,24 @@ def is_game_window(hwnd):
                 log(f"Исключён процесс {process_name}")
                 last_excluded_process_logged = process_name
             return False
-    if not is_game and media_players_enabled:
-        if process_name and process_name.lower() in [m.lower() for m in MEDIA_PLAYER_PROCESSES]:
-            media_covers = (width_ratio >= 0.50 and height_ratio >= 0.50)
-            if media_covers:
-                # Логируем только при смене медиаплеера, а не на каждой
-                # секунде, пока то же самое окно остаётся на весь экран.
-                if process_name != last_media_player_logged:
-                    log(f"Медиаплеер {process_name} – игровой режим")
-                    last_media_player_logged = process_name
-                return True
-    last_media_player_logged = None
+    if _is_media_player_name(process_name):
+        if not media_players_enabled:
+            # Учёт медиаплееров выключен: полноэкранный плеер не должен считаться игрой по размеру и
+            # стилю окна (is_game выше) – иначе настройка ничего не отключает.
+            return False
+        # Плеер – и на весь экран (is_game), и в окне, занимающем от половины экрана по обеим осям.
+        if is_game or (width_ratio >= 0.50 and height_ratio >= 0.50):
+            # Логируем только при смене медиаплеера, а не на каждой
+            # секунде, пока то же самое окно остаётся на весь экран.
+            if process_name != last_media_player_logged:
+                log(f"Медиаплеер {process_name} – игровой режим")
+                last_media_player_logged = process_name
+            return True
+        return False
+    # last_media_player_logged НЕ сбрасываем здесь: иначе при сворачивании
+    # плеера (foreground = рабочий стол) гейт обнулится, и при разворачивании
+    # та же строка в логе появится снова. Сброс – только в точках реальной
+    # смены сессии (закрытие игрового окна, ручное переключение режима).
     return is_game
 
 def delayed_media_switch(hwnd):
@@ -1376,10 +1589,28 @@ def delayed_media_switch(hwnd):
     # Другой поток (Timer) – берём тот же game_state_lock, что и monitor_loop()
     # (см. его определение выше, зачем).
     with game_state_lock:
+        # Автопереключение могли выключить за время задержки – режим менять нельзя.
+        if not auto_switch_enabled:
+            log("Авто-переключение выключено – переключение медиаплеера отменено")
+            return
+        # Ручной режим пользователь выбрал вручную – автопереключение по медиа
+        # срабатывать не должно (иначе через пару секунд после хоткея плеер
+        # утянет режим обратно в игровой).
+        if manual_override_active:
+            log("Ручной режим активен – переключение медиаплеера отменено")
+            return
+        # Сначала дешёвые проверки (без DDC/CI): если плеер уже закрыт или больше
+        # не медиаплеер/исключён, незачем лишний раз опрашивать монитор.
+        if not user32.IsWindow(hwnd):
+            log("Медиаплеер закрыт до срабатывания таймера – отмена")
+            return
+        if not is_game_window(hwnd):
+            log("Окно перестало быть медиаплеером за время задержки – отмена")
+            return
         if hdr_cache_valid_for(hwnd):
             log("HDR ранее подтверждён для этого окна – переключение медиаплеера отменено (без опроса монитора)")
             return
-        blocked, hdr_check = is_hdr_blocked(hwnd=hwnd)
+        blocked, hdr_check = is_hdr_blocked(force_refresh=True, hwnd=hwnd)
         if blocked:
             if hdr_check == "hdr":
                 confirmed_hdr_active = True
@@ -1387,21 +1618,6 @@ def delayed_media_switch(hwnd):
                 log("HDR подтверждён – переключение медиаплеера отменено (запомнено для этого окна)")
             else:
                 log("Ошибка чтения яркости – переключение медиаплеера отменено")
-            return
-        if not user32.IsWindow(hwnd):
-            log("Медиаплеер закрыт до срабатывания таймера – отмена")
-            return
-        if not is_game_window(hwnd):
-            log("Окно перестало быть медиаплеером за время задержки – отмена")
-            return
-        blocked, hdr_check = is_hdr_blocked(force_refresh=True, hwnd=hwnd)
-        if blocked:
-            if hdr_check == "hdr":
-                confirmed_hdr_active = True
-                hdr_confirmed_for_hwnd = hwnd
-                log("HDR включился перед финальным переключением – отмена (запомнено для этого окна)")
-            else:
-                log("Ошибка чтения яркости перед финальным переключением – отмена")
             return
         if current_mode_index != 1:
             log(f"Медиаплеер подтверждён: {get_process_name(hwnd) or 'неизвестный процесс'} через {media_delay_seconds} сек – переключение на игровой режим")
@@ -1419,12 +1635,13 @@ def monitor_loop():
     global manual_override_active, manual_override_waiting
     global confirmed_hdr_active, hdr_confirmed_for_hwnd, game_switch_attempt_logged, game_switch_attempt_hwnd
     global standard_return_attempt_logged, standard_return_blocked_logged, standard_return_last_attempt_time
-    global standard_restore_pending, last_session_media
+    global standard_restore_pending, last_session_media, last_media_player_logged
 
     while not stop_hotkey_thread:
-        lock_held = False  # True только пока ИМЕННО ЭТА итерация держит game_state_lock
+        lock_held = False
         try:
             if not auto_switch_enabled:
+                # Состояние при смене настройки сбрасывает on_auto_switch_changed() (под game_state_lock).
                 time.sleep(1)
                 continue
 
@@ -1437,6 +1654,10 @@ def monitor_loop():
 
             # ==================== РУЧНОЙ РЕЖИМ ====================
             if manual_override_active:
+                if last_session_media and game_window_hwnd is None:
+                    last_session_media = False
+                    log("[Ручной режим] Сброс устаревшего last_session_media")
+
                 if game_window_hwnd is None:
                     if manual_override_waiting:
                         if hwnd and is_game_window(hwnd):
@@ -1454,6 +1675,7 @@ def monitor_loop():
                         game_window_hwnd = None
                         last_reported_state = None
                         game_counter = 0
+                        last_media_player_logged = None
                         reset_confirmed_hdr()
                         game_switch_attempt_logged = False
                         game_switch_attempt_hwnd = None
@@ -1463,8 +1685,6 @@ def monitor_loop():
                         lock_held = False
                         time.sleep(1)
                         continue
-                    # Окно существует, ручной режим остаётся активным
-                # Пропускаем авто-переключения
                 game_state_lock.release()
                 lock_held = False
                 time.sleep(1)
@@ -1477,7 +1697,7 @@ def monitor_loop():
                 is_game = is_game_window(hwnd)
                 if is_game and media_players_enabled:
                     process_name = get_process_name(hwnd)
-                    if process_name and process_name.lower() in [m.lower() for m in MEDIA_PLAYER_PROCESSES]:
+                    if _is_media_player_name(process_name):
                         is_media = True
 
             if is_game:
@@ -1495,9 +1715,12 @@ def monitor_loop():
                         if game_window_hwnd == hwnd and last_reported_state == True:
                             pass
                         elif hdr_cache_valid_for(hwnd):
-                            pass  # HDR уже подтверждён именно для этого окна – не опрашиваем монитор повторно
+                            pass
                         else:
-                            blocked, hdr_check = is_hdr_blocked(hwnd=hwnd)
+                            # Предварительная проверка – только по Windows (без чтения монитора): окончательное
+                            # решение принимает delayed_media_switch (способ "media", с проверкой яркости).
+                            # Если Windows уже видит HDR – таймер запускать незачем.
+                            blocked, hdr_check = is_hdr_blocked(hwnd=hwnd, method="windows")
                             if blocked:
                                 if hdr_check == "hdr":
                                     confirmed_hdr_active = True
@@ -1533,11 +1756,22 @@ def monitor_loop():
                                 game_switch_attempt_hwnd = None
             else:
                 game_counter = max(game_counter - 1, 0)
-                with media_timer_lock:
-                    if media_timer is not None:
-                        media_timer.cancel()
-                        media_timer = None
-                        log("Активное окно не игра – таймер медиа отменён")
+                # Таймер медиаплеера здесь НЕ отменяем: переключение должно произойти, даже если
+                # плеер ушёл из фокуса (или активное окно на миг мигнуло при открытии файла/смене
+                # размера). Актуальность окна проверяет delayed_media_switch: окно существует, не
+                # свёрнуто и всё ещё медиаплеер.
+                # last_session_media относится к сессии, начатой медиаплеером, и нужен, пока есть
+                # что проверять способом "media": отслеживаемое окно (оно могло быть просто свёрнуто)
+                # или невыполненный возврат в стандартный режим (standard_restore_pending). Закрытое
+                # окно здесь НЕ считается концом сессии: его обработает ветка "Игра закрыта" ниже, и
+                # возврат в SDR должен проверяться тем же способом, что и вход. Флаг снимается, когда
+                # держать нечего – типично, если вход заблокировал HDR и переключения не было.
+                # Условие game_counter == 0 – чтобы не сбрасывать при коротком переключении на другое окно.
+                if (last_session_media and game_counter == 0
+                        and game_window_hwnd is None and not standard_restore_pending):
+                    log("Медиа-сессия завершена – сброс last_session_media")
+                    last_session_media = False
+                    last_media_player_logged = None
 
                 if game_window_hwnd is not None:
                     if not user32.IsWindow(game_window_hwnd):
@@ -1545,7 +1779,13 @@ def monitor_loop():
                         reset_confirmed_hdr()
                         game_switch_attempt_logged = False
                         game_switch_attempt_hwnd = None
-                        # Хендл сбрасываем всегда – иначе при блокировке HDR ветка срабатывает каждую секунду.
+                        # Окно закрыто – сессия завершена. Сбрасываем гейт лога
+                        # «Медиаплеер X – игровой режим», чтобы следующая сессия
+                        # того же плеера залогировалась заново.
+                        last_media_player_logged = None
+                        # Хендл сбрасываем ВСЕГДА, даже если переключение не удалось: иначе при блокировке
+                        # HDR эта ветка срабатывала бы каждую секунду (окна уже нет, а условие очистки не
+                        # наступило бы никогда).
                         game_window_hwnd = None
                         # Игра закрыта независимо от того, удастся ли применить SDR; долг по SDR –
                         # в отдельном флаге standard_restore_pending.
@@ -1601,12 +1841,12 @@ def toggle_mode(icon=None):
     global manual_override_active, manual_override_waiting
     global game_window_hwnd, game_counter, confirmed_hdr_active, hdr_confirmed_for_hwnd
     global standard_return_attempt_logged, standard_return_blocked_logged, standard_return_last_attempt_time
-    global standard_restore_pending
-    
+    global standard_restore_pending, last_session_media, last_media_player_logged
+
     now = time.time()
     if now - last_switch_time < DELAY:
         return
-    
+
     try:
         log("\n" + "="*50)
         log("Начало переключения режима")
@@ -1638,25 +1878,22 @@ def toggle_mode(icon=None):
                 mode_name = get_mode_name(current_mode_index)
 
                 if new_mode_index == 0:
-                    # Ручное переключение на стандартный
                     active_hwnd = user32.GetForegroundWindow()
                     if active_hwnd and is_game_window(active_hwnd):
-                        # Игра активна – включаем ручной режим с целевым стандартным и запоминаем окно
                         manual_override_active = True
                         game_window_hwnd = active_hwnd
                         manual_override_waiting = False
                         last_reported_state = False
                         log(f"Ручной режим включён (стандартный), запомнено окно игры {hex(active_hwnd)}")
                     else:
-                        # Игра не активна – выключаем ручной режим полностью
                         manual_override_active = False
                         manual_override_waiting = False
                         game_window_hwnd = None
                         last_reported_state = False
                         log("Ручной режим выключен (переключение на стандартный, игра не активна)")
-                else:  # new_mode_index == 1
-                    # Ручное переключение на игровой
+                else:
                     manual_override_active = True
+                    last_session_media = False
                     log(f"Ручной режим включён, целевой режим: {mode_name}")
 
                     active_hwnd = user32.GetForegroundWindow()
@@ -1671,10 +1908,12 @@ def toggle_mode(icon=None):
 
                     last_reported_state = True
 
-                # Ручное переключение – без суффикса с процессом (перезаписываем
-                # то, что мог выставить apply_mode_by_index выше).
-                update_tray_title(current_mode_index, None)
+                # Ручное переключение = смена сессии, гейт лога «Медиаплеер X –
+                # игровой режим» сбрасываем, чтобы в новой сессии строка
+                # появилась заново.
+                last_media_player_logged = None
 
+                update_tray_title(current_mode_index, None)
                 show_notification(t("notif_mode", mode=mode_name))
 
         log("="*50)
@@ -1724,9 +1963,12 @@ def create_settings_window():
                     return
 
                 global auto_switch_enabled, media_players_enabled, media_delay_seconds
+                prev_auto_switch = auto_switch_enabled
                 auto_switch_enabled = auto_switch_var.get()
                 media_players_enabled = media_players_var.get()
                 media_delay_seconds = delay_val
+                if auto_switch_enabled != prev_auto_switch:
+                    threading.Thread(target=on_auto_switch_changed, args=(auto_switch_enabled,), daemon=True).start()
 
                 # Вычисляем, какие процессы были добавлены в этом сохранении,
                 # ДО перезаписи custom_excluded_processes.
@@ -1759,9 +2001,21 @@ def create_settings_window():
 
                 if save_settings():
                     show_notification(t("notif_settings_saved"))
-                    blocked, hdr_check = is_hdr_blocked(force_refresh=True)
-                    if not blocked:
-                        apply_mode_settings(current_mode_index)
+                else:
+                    # Значения в памяти уже новые и действуют до перезапуска – молча терять их при
+                    # следующем запуске нельзя, поэтому сообщаем причину.
+                    show_notification(t("notif_save_failed", error=last_save_error), error=True)
+                # Переприменение настроек к текущему режиму — в отдельном
+                # потоке под game_state_lock. Так не блокируем UI на время
+                # DDC-операций и не гоняем с monitor_loop, который мог бы
+                # сменить current_mode_index прямо во время записи. Применяем и при
+                # ошибке записи файла: значения в памяти от неё не зависят.
+                def reapply_current_mode():
+                    with game_state_lock:
+                        blocked, _ = is_hdr_blocked(force_refresh=True)
+                        if not blocked:
+                            apply_mode_settings(current_mode_index)
+                threading.Thread(target=reapply_current_mode, daemon=True).start()
 
                 if language_changed:
                     rebuild_tray_menu()
@@ -1775,10 +2029,14 @@ def create_settings_window():
                 if auto_switch_enabled:
                     def check_now():
                         hwnd = user32.GetForegroundWindow()
-                        if hwnd and is_game_window(hwnd):
-                            log("Авто-переключение включено – игра/медиаплеер активна, переключаем")
-                            # Другой поток – тот же game_state_lock, что и monitor_loop().
-                            with game_state_lock:
+                        if not hwnd:
+                            return
+                        # is_game_window модифицирует глобальные
+                        # last_excluded_process_logged / last_media_player_logged —
+                        # держим game_state_lock, чтобы не гонять с monitor_loop.
+                        with game_state_lock:
+                            if is_game_window(hwnd):
+                                log("Авто-переключение включено – игра/медиаплеер активна, переключаем")
                                 apply_mode_by_index(1, force_hdr_check=True, hwnd=hwnd)
                     threading.Thread(target=check_now, daemon=True).start()
 
@@ -1848,7 +2106,6 @@ def create_settings_window():
         main_frame = ttk.Frame(scrollable_frame, padding="15")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # -------- Авто-переключение --------
         auto_switch_var = tk.BooleanVar(value=auto_switch_enabled)
         auto_switch_check = ttk.Checkbutton(
             main_frame,
@@ -1881,13 +2138,11 @@ def create_settings_window():
         auto_switch_var.trace('w', toggle_media_players_state)
         media_players_var.trace('w', toggle_media_delay_state)
 
-        # -------- Стандартный и игровой режимы: два блока в ряд --------
         modes_row = ttk.Frame(main_frame)
         modes_row.pack(fill=tk.X, pady=(0, 15))
         modes_row.columnconfigure(0, weight=1, uniform="modes")
         modes_row.columnconfigure(1, weight=1, uniform="modes")
 
-        # -------- Стандартный режим --------
         standard_frame = ttk.LabelFrame(modes_row, text=t("settings_standard_mode"), padding="10")
         standard_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
         ttk.Label(standard_frame, text=t("settings_brightness_label")).pack(anchor=tk.W, pady=(0, 5))
@@ -1911,7 +2166,6 @@ def create_settings_window():
         standard_desc_label.pack(anchor=tk.W, pady=(5, 0))
         on_standard_dimming_select()
 
-        # -------- Игровой режим --------
         gaming_frame = ttk.LabelFrame(modes_row, text=t("settings_gaming_mode"), padding="10")
         gaming_frame.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
         ttk.Label(gaming_frame, text=t("settings_brightness_label")).pack(anchor=tk.W, pady=(0, 5))
@@ -1935,7 +2189,6 @@ def create_settings_window():
         gaming_desc_label.pack(anchor=tk.W, pady=(5, 0))
         on_gaming_dimming_select()
 
-        # -------- Свои исключения --------
         custom_excluded_local = list(custom_excluded_processes)
         exclusions_frame = ttk.LabelFrame(main_frame, text=t("settings_exclusions_group"), padding="10")
         exclusions_frame.pack(fill=tk.X, pady=(0, 15))
@@ -2033,7 +2286,6 @@ def create_settings_window():
         ttk.Button(exclusion_buttons_frame, text=t("settings_exclusions_remove"),
                    command=remove_exclusion).pack(side=tk.LEFT)
 
-        # -------- Дополнительные настройки (чекбокс) --------
         advanced_frame = ttk.Frame(main_frame)
         advanced_frame.pack(anchor=tk.W, fill=tk.X, pady=(0, 5))
         advanced_var = tk.BooleanVar(value=advanced_settings_enabled)
@@ -2045,10 +2297,8 @@ def create_settings_window():
         )
         advanced_check.pack(anchor=tk.W)
 
-        # Контейнер для скрываемых настроек
         advanced_container = ttk.Frame(main_frame)
 
-        # -------- HDR настройки (внутри контейнера) --------
         hdr_frame = ttk.LabelFrame(advanced_container, text=t("settings_hdr_group"), padding="10")
         hdr_frame.pack(fill=tk.X, pady=(0, 15))
 
@@ -2067,7 +2317,6 @@ def create_settings_window():
         preset_entry.insert(0, str(hdr_settings["preset_number"]))
         preset_entry.pack(anchor=tk.W)
 
-        # -------- Debug настройки (внутри контейнера) --------
         debug_frame = ttk.LabelFrame(advanced_container, text=t("settings_debug_group"), padding="10")
         debug_frame.pack(fill=tk.X, pady=(0, 15))
 
@@ -2086,7 +2335,6 @@ def create_settings_window():
             else:
                 advanced_container.pack_forget()
 
-        # -------- Язык --------
         language_frame = ttk.LabelFrame(main_frame, text=t("settings_language_group"), padding="10")
         language_frame.pack(fill=tk.X, pady=(0, 15))
         language_names = [TRANSLATIONS[code]["lang_name"] for code in SUPPORTED_LANGUAGES]
@@ -2098,7 +2346,6 @@ def create_settings_window():
 
         toggle_advanced_container()
 
-        # -------- Горячая клавиша --------
         hotkey_frame = ttk.LabelFrame(main_frame, text=t("settings_hotkey_group"), padding="10")
         hotkey_frame.configure(takefocus=1)
         hotkey_frame.pack(fill=tk.X, pady=(0, 15))
@@ -2301,7 +2548,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.4.0") + " \n"
+            t("about_version", version="1.4.2") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
