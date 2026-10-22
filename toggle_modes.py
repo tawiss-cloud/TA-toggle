@@ -7,10 +7,12 @@ from pystray import MenuItem as item, Menu
 from PIL import Image, ImageDraw
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, colorchooser
 import json
 import os
 import re
+import io
+import base64
 import queue
 import sys
 import webbrowser
@@ -77,6 +79,7 @@ TRANSLATIONS = {
         "err_brightness_range": "Яркость должна быть от 0 до 100",
         "err_select_dimming": "Выберите режим локального затемнения",
         "err_preset_range": "Номер пресета должен быть от 0 до 255",
+        "err_icon_color": "Неверный цвет иконки. Формат: #RRGGBB (например, #63B03D)",
         "err_delay_min": "Задержка должна быть не менее 1 секунды",
         "err_delay_max": "Задержка не должна превышать 60 секунд",
         "settings_title": "Настройки",
@@ -97,6 +100,13 @@ TRANSLATIONS = {
         "settings_range_1_60": "(1-60)",
         "settings_standard_mode": "Стандартный режим (SDR)",
         "settings_gaming_mode": "Игровой режим (SDR)",
+        "settings_icon_color_label": "Цвет иконки в трее:",
+        "settings_icon_color_reset": "Сбросить",
+        "settings_icon_color_dialog": "Цвет иконки в трее",
+        "settings_notification_group": "Всплывающее окно",
+        "settings_notification_win10": "Win 10",
+        "settings_notification_win11": "Win 11",
+        "settings_notification_off": "Выключено",
         "settings_brightness_label": "Яркость (0-100):",
         "settings_dimming_label": "Локальное затемнение:",
         "settings_hdr_group": "Настройки HDR",
@@ -178,6 +188,7 @@ TRANSLATIONS = {
         "err_brightness_range": "Brightness must be between 0 and 100",
         "err_select_dimming": "Please select a local dimming mode",
         "err_preset_range": "Preset number must be between 0 and 255",
+        "err_icon_color": "Invalid icon color. Use #RRGGBB format (e.g. #63B03D)",
         "err_delay_min": "Delay must be at least 1 second",
         "err_delay_max": "Delay must not exceed 60 seconds",
         "settings_title": "Settings",
@@ -198,6 +209,13 @@ TRANSLATIONS = {
         "settings_range_1_60": "(1-60)",
         "settings_standard_mode": "Standard mode (SDR)",
         "settings_gaming_mode": "Gaming mode (SDR)",
+        "settings_icon_color_label": "Tray icon color:",
+        "settings_icon_color_reset": "Reset",
+        "settings_icon_color_dialog": "Tray icon color",
+        "settings_notification_group": "Pop-up notification",
+        "settings_notification_win10": "Win 10",
+        "settings_notification_win11": "Win 11",
+        "settings_notification_off": "Off",
         "settings_brightness_label": "Brightness (0-100):",
         "settings_dimming_label": "Local dimming:",
         "settings_hdr_group": "HDR settings",
@@ -578,6 +596,19 @@ hotkey_thread_id = None
 stop_hotkey_thread = False
 tray_icon = None
 
+# Цвет центра иконки в трее для каждого режима: [стандартный, игровой].
+# Игровой по умолчанию зелёный #63B03D. Хранится в настройках (ключ icon_colors).
+DEFAULT_ICON_COLORS = ["#FFFFFF", "#63B03D"]
+# Прежний цвет по умолчанию для игрового режима: если он сохранён в настройках, считаем, что цвет не
+# менялся вручную, и подставляем новый (иначе смена умолчания не дошла бы до уже сохранённых настроек).
+LEGACY_GAMING_ICON_COLOR = "#4CAF50"
+icon_colors = list(DEFAULT_ICON_COLORS)
+
+# Стиль всплывающего окна: "win10" – прямые углы (как раньше), "win11" – скруглённые углы,
+# "off" – не показывать (ошибку сохранения настроек показываем всегда). Хранится в настройках.
+NOTIFICATION_STYLES = ("win10", "win11", "off")
+notification_style = "win10"
+
 hdr_settings = {
     "auto_set_preset": False,
     "preset_number": 5
@@ -808,6 +839,7 @@ def request_hotkey_update(new_mod, new_vk):
 def load_settings():
     global modes, hdr_settings, auto_switch_enabled, media_players_enabled, media_delay_seconds
     global HOTKEY_MODIFIERS, HOTKEY_VK, current_language, advanced_settings_enabled, debug_enabled
+    global notification_style
     language_loaded = False
     modes_loaded = False
     try:
@@ -822,6 +854,13 @@ def load_settings():
                     modes_loaded = True
                 if 'hdr_settings' in data:
                     hdr_settings.update(data['hdr_settings'])
+                if isinstance(data.get('icon_colors'), list) and len(data['icon_colors']) == 2:
+                    icon_colors[:] = [normalize_icon_color(c) or d
+                                      for c, d in zip(data['icon_colors'], DEFAULT_ICON_COLORS)]
+                    if icon_colors[1] == LEGACY_GAMING_ICON_COLOR:
+                        icon_colors[1] = DEFAULT_ICON_COLORS[1]
+                if data.get('notification_style') in NOTIFICATION_STYLES:
+                    notification_style = data['notification_style']
                 if 'auto_switch_enabled' in data:
                     auto_switch_enabled = data['auto_switch_enabled']
                 if 'media_players_enabled' in data:
@@ -883,6 +922,8 @@ def save_settings():
             'language': current_language,
             'modes': modes,
             'hdr_settings': hdr_settings,
+            'icon_colors': list(icon_colors),
+            'notification_style': notification_style,
             'auto_switch_enabled': auto_switch_enabled,
             'media_players_enabled': media_players_enabled,
             'media_delay_seconds': media_delay_seconds,
@@ -935,6 +976,26 @@ def _is_media_player_window(hwnd):
     except Exception:
         return False
     return _is_media_player_name(name)
+
+def media_player_window_open():
+    """True, если открыто окно медиаплеера (в фокусе или нет). Нужно для ручного переключения: плеер может
+    включать HDR в обход Windows, и это видно только по яркости, а не по системному режиму цвета."""
+    if not media_players_enabled:
+        return False
+    try:
+        return any(_is_media_player_name(name) for name, _ in list_windowed_processes())
+    except Exception as e:
+        log(f"Ошибка поиска окна медиаплеера: {e}")
+        return False
+
+def manual_hdr_method():
+    """Способ проверки HDR для ручной попытки переключения. Если плеер открыт, но не в фокусе (и сессия
+    не отслеживается: режим мог переключить плеер, а затем состояние сбросилось при потере фокуса), обычное
+    определение дало бы «windows» – а он не видит HDR, включённый плеером. Поэтому при открытом
+    медиаплеере всегда «media» (Windows → при «hdr» монитор не трогаем, иначе чтение яркости)."""
+    if resolve_hdr_method() == "media" or media_player_window_open():
+        return "media"
+    return "windows"
 
 def resolve_hdr_method(hwnd=None):
     """Способ проверки HDR: "media" – если задействован медиаплеер (окно hwnd, активное/запомненное
@@ -1037,6 +1098,15 @@ def hdr_cache_valid_for(hwnd):
         and user32.IsWindow(hwnd)
     )
 
+def update_tray_icon(mode_index=None):
+    """Перерисовывает иконку трея цветом указанного (по умолчанию – текущего) режима."""
+    if not tray_icon:
+        return
+    try:
+        tray_icon.icon = create_image(mode_index)
+    except Exception as e:
+        log(f"Ошибка обновления иконки трея: {e}")
+
 def update_tray_title(mode_index, process_name=None):
     """Единая точка обновления подсказки трея.
     process_name != None – суффикс с именем процесса (только для игрового
@@ -1054,15 +1124,40 @@ def update_tray_title(mode_index, process_name=None):
             tray_icon.title = t("tray_title", mode=get_mode_name(mode_index))
     except Exception as e:
         log(f"Ошибка обновления подсказки трея: {e}")
+    # Подсказка и иконка меняются вместе – update_tray_title зовётся при каждой смене режима.
+    update_tray_icon(mode_index)
+
+def _round_notification_corners(win, width, height):
+    """Скругляет углы всплывающего окна: на Windows 11 – средствами DWM (со сглаживанием),
+    на более старых сборках – регионом окна (углы без сглаживания)."""
+    win.update_idletasks()
+    hwnd = user32.GetParent(win.winfo_id()) or win.winfo_id()
+    if _WIN_BUILD >= 22000:
+        dwmapi = ctypes.windll.dwmapi
+        corner = ctypes.c_int(2)            # DWMWCP_ROUND
+        dwmapi.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), 33, ctypes.byref(corner), ctypes.sizeof(corner))
+        border = ctypes.c_uint(0x003C3C3C)  # DWMWA_BORDER_COLOR: тонкая тёмно-серая рамка (BGR)
+        dwmapi.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), 34, ctypes.byref(border), ctypes.sizeof(border))
+    else:
+        gdi32 = ctypes.windll.gdi32
+        gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
+        region = gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, 16, 16)
+        user32.SetWindowRgn(ctypes.c_void_p(hwnd), ctypes.c_void_p(region), True)
 
 def show_notification(message, error=False):
+    # "off" – уведомления выключены. Ошибку (error=True: не сохранились настройки) показываем всё
+    # равно: иначе изменения молча пропали бы после перезапуска.
+    if notification_style == "off" and not error:
+        return
+    rounded = (notification_style == "win11")
     def create_notification():
         try:
             notification = tk.Toplevel()
             notification.overrideredirect(True)
             notification.attributes('-topmost', True)
             notification.attributes('-alpha', 0.95)
-            notification.configure(bg='#2b2b2b', highlightbackground='#000000', highlightthickness=1)
+            notification.configure(bg='#2b2b2b', highlightbackground='#000000',
+                                   highlightthickness=0 if rounded else 1)
             screen_width = notification.winfo_screenwidth()
             screen_height = notification.winfo_screenheight()
             window_width = 350
@@ -1070,6 +1165,11 @@ def show_notification(message, error=False):
             x = screen_width - window_width - 10
             y = screen_height - window_height - 50
             notification.geometry(f'{window_width}x{window_height}+{x}+{y}')
+            if rounded:
+                try:
+                    _round_notification_corners(notification, window_width, window_height)
+                except Exception as e:
+                    log(f"Не удалось скруглить углы уведомления: {e}")
             message_label = tk.Label(notification, text=message, fg='#F44336' if error else '#4CAF50',
                                      bg='#2b2b2b', font=('Arial', 11, 'bold'),
                                      wraplength=window_width - 20, justify='center')
@@ -1178,15 +1278,53 @@ def find_titan_army_monitor():
     log("Ни один монитор не доступен!")
     return False
 
-def create_image():
+def normalize_icon_color(text):
+    """'#RRGGBB' (пробелы по краям игнорируются) -> '#RRGGBB' в верхнем регистре, иначе None."""
+    if not isinstance(text, str):
+        return None
+    value = text.strip()
+    if not re.fullmatch(r'#[0-9A-Fa-f]{6}', value):
+        return None
+    return value.upper()
+
+def _render_icon(color_hex, size=64):
+    """Чёрный фон и квадрат в центре цвета color_hex (#RRGGBB)."""
+    r, g, b = (int(color_hex[i:i + 2], 16) for i in (1, 3, 5))
     img = Image.new('RGBA', (64, 64), (0, 0, 0, 255))
     d = ImageDraw.Draw(img)
     margin = 16
     d.rectangle([margin, margin, 64 - margin - 1, 64 - margin - 1],
-                fill=(255, 255, 255, 255))
+                fill=(r, g, b, 255))
     d.rectangle([margin, margin, 64 - margin - 1, 64 - margin - 1],
                 outline=(0, 0, 0, 255), width=1)
+    if size != 64:
+        img = img.resize((size, size), Image.NEAREST)
     return img
+
+def create_image(mode_index=None):
+    """Иконка трея: чёрный фон и квадрат в центре цвета режима mode_index (по умолчанию – текущего)."""
+    if mode_index is None:
+        mode_index = current_mode_index
+    try:
+        color_hex = normalize_icon_color(icon_colors[mode_index]) or DEFAULT_ICON_COLORS[0]
+    except (IndexError, TypeError):
+        color_hex = DEFAULT_ICON_COLORS[0]
+    return _render_icon(color_hex)
+
+_window_icon_photos = []
+
+def apply_window_icon(win):
+    """Иконка программы (чёрная с белым центром) в углу окна вместо пера Tk. Вызывать из потока Tk."""
+    try:
+        if not _window_icon_photos:
+            for size in (64, 32, 16):
+                buf = io.BytesIO()
+                _render_icon("#FFFFFF", size).save(buf, format="PNG")
+                _window_icon_photos.append(
+                    tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii")))
+        win.iconphoto(False, *_window_icon_photos)
+    except Exception as e:
+        log(f"Ошибка установки иконки окна: {e}")
 
 def set_local_dimming(monitor, value, retries=3):
     for attempt in range(retries):
@@ -1302,7 +1440,7 @@ def retry_dimming_only(mode_index, attempts=5, delay=0.5):
             return
     log("Не удалось дожать LD после дополнительных попыток")
 
-def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
+def apply_mode_by_index(index, force_hdr_check=False, hwnd=None, hdr_method=None):
     global current_mode_index, last_excluded_process_logged
     global confirmed_hdr_active, hdr_confirmed_for_hwnd, standard_return_blocked_logged
     global last_session_media
@@ -1322,10 +1460,10 @@ def apply_mode_by_index(index, force_hdr_check=False, hwnd=None):
         hdr_confirmed_for_hwnd = None
 
     # Состояние проверки ДО вызова – ниже оно перезапишется в is_hdr_blocked().
-    _cached_now = hdr_method_cache.get(resolve_hdr_method(hwnd))
+    _cached_now = hdr_method_cache.get(hdr_method or resolve_hdr_method(hwnd))
     was_blocking_before = bool(_cached_now) and _cached_now[0] in ("hdr", "error")
 
-    blocked, hdr_check = is_hdr_blocked(force_refresh=force_hdr_check, hwnd=hwnd)
+    blocked, hdr_check = is_hdr_blocked(force_refresh=force_hdr_check, hwnd=hwnd, method=hdr_method)
     if blocked:
         if hdr_check == "hdr":
             if use_session_cache:
@@ -1872,7 +2010,8 @@ def toggle_mode(icon=None):
 
         # Ручная попытка – всегда свежий опрос, независимо от запомненного.
         with game_state_lock:
-            blocked, hdr_check_result = is_hdr_blocked(force_refresh=True)
+            hdr_method = manual_hdr_method()
+            blocked, hdr_check_result = is_hdr_blocked(force_refresh=True, method=hdr_method)
             # Ручное переключение не привязано к окну – сбрасываем hdr_confirmed_for_hwnd.
             confirmed_hdr_active = (hdr_check_result == "hdr")
             hdr_confirmed_for_hwnd = None
@@ -1892,7 +2031,7 @@ def toggle_mode(icon=None):
             sync_current_mode()
             new_mode_index = 1 - current_mode_index
 
-            if apply_mode_by_index(new_mode_index, force_hdr_check=True):
+            if apply_mode_by_index(new_mode_index, force_hdr_check=True, hdr_method=hdr_method):
                 last_switch_time = now
                 mode_name = get_mode_name(current_mode_index)
 
@@ -1971,6 +2110,10 @@ def create_settings_window():
                 preset_number = int(preset_entry.get())
                 if not (0 <= preset_number <= 255):
                     raise ValueError(t("err_preset_range"))
+                standard_icon_color = normalize_icon_color(standard_icon_color_var.get())
+                gaming_icon_color = normalize_icon_color(gaming_icon_color_var.get())
+                if not standard_icon_color or not gaming_icon_color:
+                    raise ValueError(t("err_icon_color"))
                 try:
                     delay_val = int(media_delay_var.get())
                     if delay_val < 1:
@@ -2005,6 +2148,11 @@ def create_settings_window():
                 modes[1]["local_dimming"] = gaming_dimming
                 hdr_settings["auto_set_preset"] = auto_set_preset
                 hdr_settings["preset_number"] = preset_number
+                icon_colors[0] = standard_icon_color
+                icon_colors[1] = gaming_icon_color
+                update_tray_icon(current_mode_index)
+                global notification_style
+                notification_style = notification_code_by_name.get(notification_var.get(), notification_style)
 
                 global HOTKEY_MODIFIERS, HOTKEY_VK
                 hotkey_changed = (new_hotkey_mod != HOTKEY_MODIFIERS) or (new_hotkey_vk != HOTKEY_VK)
@@ -2102,8 +2250,9 @@ def create_settings_window():
                 media_delay_entry.config(state="disabled")
 
         window = tk.Toplevel()
+        apply_window_icon(window)
         window.title(t("settings_title"))
-        win_width = 560
+        win_width = 600
         window.update_idletasks()
         win_height = min(920, window.winfo_screenheight() - 80)
         window.resizable(False, False)
@@ -2157,6 +2306,60 @@ def create_settings_window():
         auto_switch_var.trace('w', toggle_media_players_state)
         media_players_var.trace('w', toggle_media_delay_state)
 
+        def build_icon_color_row(parent, initial, default):
+            """Цвет иконки трея в одну строку: образец (клик открывает палитру), поле #RRGGBB, «Сбросить».
+            Возвращает StringVar."""
+            var = tk.StringVar(value=initial)
+            ttk.Label(parent, text=t("settings_icon_color_label"),
+                      font=('Arial', 9, 'bold')).pack(anchor=tk.W, pady=(10, 5))
+            row = ttk.Frame(parent)
+            row.pack(anchor=tk.W, fill=tk.X)
+            swatch = tk.Label(row, width=4, relief="solid", borderwidth=1, bg=initial, cursor="hand2")
+            swatch.pack(side=tk.LEFT, padx=(0, 6), ipady=1)
+            entry = ttk.Entry(row, width=9, textvariable=var)
+            entry.pack(side=tk.LEFT, padx=(0, 6))
+            ttk.Button(row, text=t("settings_icon_color_reset"),
+                       command=lambda: var.set(default)).pack(side=tk.LEFT)
+
+            def refresh_swatch(*_):
+                color = normalize_icon_color(var.get())
+                if color:
+                    swatch.config(bg=color, text="")
+                else:
+                    swatch.config(bg=window.cget("bg"), text="?")
+
+            def pick_color(event=None):
+                current = normalize_icon_color(var.get()) or default
+                chosen = colorchooser.askcolor(color=current, parent=window,
+                                               title=t("settings_icon_color_dialog"))[1]
+                if chosen:
+                    var.set(normalize_icon_color(chosen) or current)
+
+            def paste_color(event=None):
+                """Ctrl+V: если в буфере цвет #RRGGBB – он заменяет содержимое поля целиком; иначе обычная вставка."""
+                try:
+                    clip = normalize_icon_color(entry.clipboard_get())
+                except tk.TclError:
+                    return None
+                if not clip:
+                    return None
+                var.set(clip)
+                entry.icursor(tk.END)
+                return "break"
+
+            def paste_any_layout(event):
+                # В нелатинской раскладке Ctrl+V приходит с другим keysym, и <<Paste>> не срабатывает;
+                # keycode 86 – физическая клавиша V.
+                if event.keycode == 86 and event.keysym.lower() != "v":
+                    entry.event_generate("<<Paste>>")
+                    return "break"
+
+            swatch.bind("<Button-1>", pick_color)
+            entry.bind("<<Paste>>", paste_color)
+            entry.bind("<Control-KeyPress>", paste_any_layout)
+            var.trace_add('write', refresh_swatch)
+            return var
+
         modes_row = ttk.Frame(main_frame)
         modes_row.pack(fill=tk.X, pady=(0, 15))
         modes_row.columnconfigure(0, weight=1, uniform="modes")
@@ -2184,6 +2387,7 @@ def create_settings_window():
         standard_desc_label = ttk.Label(standard_frame, text="", wraplength=220, foreground="gray")
         standard_desc_label.pack(anchor=tk.W, pady=(5, 0))
         on_standard_dimming_select()
+        standard_icon_color_var = build_icon_color_row(standard_frame, icon_colors[0], DEFAULT_ICON_COLORS[0])
 
         gaming_frame = ttk.LabelFrame(modes_row, text=t("settings_gaming_mode"), padding="10")
         gaming_frame.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
@@ -2207,6 +2411,7 @@ def create_settings_window():
         gaming_desc_label = ttk.Label(gaming_frame, text="", wraplength=220, foreground="gray")
         gaming_desc_label.pack(anchor=tk.W, pady=(5, 0))
         on_gaming_dimming_select()
+        gaming_icon_color_var = build_icon_color_row(gaming_frame, icon_colors[1], DEFAULT_ICON_COLORS[1])
 
         custom_excluded_local = list(custom_excluded_processes)
         exclusions_frame = ttk.LabelFrame(main_frame, text=t("settings_exclusions_group"), padding="10")
@@ -2246,6 +2451,7 @@ def create_settings_window():
 
         def pick_running_process():
             dialog = tk.Toplevel(window)
+            apply_window_icon(dialog)
             dialog.title(t("settings_exclusions_running_title"))
             dialog.transient(window)
             dialog.resizable(False, False)
@@ -2362,6 +2568,18 @@ def create_settings_window():
         language_combo = ttk.Combobox(language_frame, textvariable=language_var, values=language_names,
                                        state="readonly", width=20)
         language_combo.pack(anchor=tk.W)
+
+        notification_frame = ttk.LabelFrame(main_frame, text=t("settings_notification_group"), padding="10")
+        notification_frame.pack(fill=tk.X, pady=(0, 15))
+        notification_names = {
+            "win10": t("settings_notification_win10"),
+            "win11": t("settings_notification_win11"),
+            "off": t("settings_notification_off"),
+        }
+        notification_code_by_name = {name: code for code, name in notification_names.items()}
+        notification_var = tk.StringVar(value=notification_names.get(notification_style, notification_names["win10"]))
+        ttk.Combobox(notification_frame, textvariable=notification_var, values=list(notification_names.values()),
+                     state="readonly", width=20).pack(anchor=tk.W)
 
         toggle_advanced_container()
 
@@ -2535,6 +2753,7 @@ def on_settings(icon, item):
 def on_about(icon, item):
     def create_about_window():
         about_window = tk.Toplevel()
+        apply_window_icon(about_window)
         about_window.title(t("about_title"))
         about_width, about_height = 500, 480
         about_window.resizable(False, False)
@@ -2567,7 +2786,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.4.2") + " \n"
+            t("about_version", version="1.4.4") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
@@ -2686,7 +2905,7 @@ if __name__ == "__main__":
     tk_thread.start()
 
     tray_icon = pystray.Icon("monitor_toggle")
-    tray_icon.icon = create_image()
+    tray_icon.icon = create_image(current_mode_index)
     rebuild_tray_menu()
 
     threading.Thread(target=lambda: hotkey_listener(tray_icon), daemon=True).start()
