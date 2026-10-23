@@ -101,6 +101,7 @@ TRANSLATIONS = {
         "settings_standard_mode": "Стандартный режим (SDR)",
         "settings_gaming_mode": "Игровой режим (SDR)",
         "settings_icon_color_label": "Цвет иконки в трее:",
+        "settings_icon_color_enabled": "Менять цвет иконки в трее при смене режима",
         "settings_icon_color_reset": "Сбросить",
         "settings_icon_color_dialog": "Цвет иконки в трее",
         "settings_notification_group": "Всплывающее окно",
@@ -210,6 +211,7 @@ TRANSLATIONS = {
         "settings_standard_mode": "Standard mode (SDR)",
         "settings_gaming_mode": "Gaming mode (SDR)",
         "settings_icon_color_label": "Tray icon color:",
+        "settings_icon_color_enabled": "Change tray icon color when the mode changes",
         "settings_icon_color_reset": "Reset",
         "settings_icon_color_dialog": "Tray icon color",
         "settings_notification_group": "Pop-up notification",
@@ -603,6 +605,9 @@ DEFAULT_ICON_COLORS = ["#FFFFFF", "#63B03D"]
 # менялся вручную, и подставляем новый (иначе смена умолчания не дошла бы до уже сохранённых настроек).
 LEGACY_GAMING_ICON_COLOR = "#4CAF50"
 icon_colors = list(DEFAULT_ICON_COLORS)
+# False (по умолчанию) – цвет иконки не зависит от режима (всегда белый центр), поля цвета в
+# настройках скрыты. True – центр иконки меняет цвет вместе с режимом.
+icon_color_enabled = False
 
 # Стиль всплывающего окна: "win10" – прямые углы (как раньше), "win11" – скруглённые углы,
 # "off" – не показывать (ошибку сохранения настроек показываем всегда). Хранится в настройках.
@@ -839,7 +844,7 @@ def request_hotkey_update(new_mod, new_vk):
 def load_settings():
     global modes, hdr_settings, auto_switch_enabled, media_players_enabled, media_delay_seconds
     global HOTKEY_MODIFIERS, HOTKEY_VK, current_language, advanced_settings_enabled, debug_enabled
-    global notification_style
+    global notification_style, icon_color_enabled
     language_loaded = False
     modes_loaded = False
     try:
@@ -859,6 +864,8 @@ def load_settings():
                                       for c, d in zip(data['icon_colors'], DEFAULT_ICON_COLORS)]
                     if icon_colors[1] == LEGACY_GAMING_ICON_COLOR:
                         icon_colors[1] = DEFAULT_ICON_COLORS[1]
+                if isinstance(data.get('icon_color_enabled'), bool):
+                    icon_color_enabled = data['icon_color_enabled']
                 if data.get('notification_style') in NOTIFICATION_STYLES:
                     notification_style = data['notification_style']
                 if 'auto_switch_enabled' in data:
@@ -923,6 +930,7 @@ def save_settings():
             'modes': modes,
             'hdr_settings': hdr_settings,
             'icon_colors': list(icon_colors),
+            'icon_color_enabled': icon_color_enabled,
             'notification_style': notification_style,
             'auto_switch_enabled': auto_switch_enabled,
             'media_players_enabled': media_players_enabled,
@@ -1302,7 +1310,10 @@ def _render_icon(color_hex, size=64):
     return img
 
 def create_image(mode_index=None):
-    """Иконка трея: чёрный фон и квадрат в центре цвета режима mode_index (по умолчанию – текущего)."""
+    """Иконка трея: чёрный фон и квадрат в центре цвета режима mode_index (по умолчанию – текущего).
+    При выключенной настройке цвета – всегда стандартный (белый) центр."""
+    if not icon_color_enabled:
+        return _render_icon(DEFAULT_ICON_COLORS[0])
     if mode_index is None:
         mode_index = current_mode_index
     try:
@@ -2110,10 +2121,13 @@ def create_settings_window():
                 preset_number = int(preset_entry.get())
                 if not (0 <= preset_number <= 255):
                     raise ValueError(t("err_preset_range"))
-                standard_icon_color = normalize_icon_color(standard_icon_color_var.get())
-                gaming_icon_color = normalize_icon_color(gaming_icon_color_var.get())
-                if not standard_icon_color or not gaming_icon_color:
-                    raise ValueError(t("err_icon_color"))
+                icon_color_on = icon_color_var.get()
+                if icon_color_on:
+                    # Скрытые поля не проверяем: ошибку в них пользователь не увидел бы.
+                    standard_icon_color = normalize_icon_color(standard_icon_color_var.get())
+                    gaming_icon_color = normalize_icon_color(gaming_icon_color_var.get())
+                    if not standard_icon_color or not gaming_icon_color:
+                        raise ValueError(t("err_icon_color"))
                 try:
                     delay_val = int(media_delay_var.get())
                     if delay_val < 1:
@@ -2148,10 +2162,12 @@ def create_settings_window():
                 modes[1]["local_dimming"] = gaming_dimming
                 hdr_settings["auto_set_preset"] = auto_set_preset
                 hdr_settings["preset_number"] = preset_number
-                icon_colors[0] = standard_icon_color
-                icon_colors[1] = gaming_icon_color
+                global icon_color_enabled, notification_style
+                icon_color_enabled = icon_color_on
+                if icon_color_on:
+                    icon_colors[0] = standard_icon_color
+                    icon_colors[1] = gaming_icon_color
                 update_tray_icon(current_mode_index)
-                global notification_style
                 notification_style = notification_code_by_name.get(notification_var.get(), notification_style)
 
                 global HOTKEY_MODIFIERS, HOTKEY_VK
@@ -2308,11 +2324,13 @@ def create_settings_window():
 
         def build_icon_color_row(parent, initial, default):
             """Цвет иконки трея в одну строку: образец (клик открывает палитру), поле #RRGGBB, «Сбросить».
-            Возвращает StringVar."""
+            Возвращает (StringVar, контейнер блока)."""
             var = tk.StringVar(value=initial)
-            ttk.Label(parent, text=t("settings_icon_color_label"),
+            block = ttk.Frame(parent)   # весь блок целиком скрывается/показывается переключателем
+            block.pack(anchor=tk.W, fill=tk.X)
+            ttk.Label(block, text=t("settings_icon_color_label"),
                       font=('Arial', 9, 'bold')).pack(anchor=tk.W, pady=(10, 5))
-            row = ttk.Frame(parent)
+            row = ttk.Frame(block)
             row.pack(anchor=tk.W, fill=tk.X)
             swatch = tk.Label(row, width=4, relief="solid", borderwidth=1, bg=initial, cursor="hand2")
             swatch.pack(side=tk.LEFT, padx=(0, 6), ipady=1)
@@ -2358,7 +2376,15 @@ def create_settings_window():
             entry.bind("<<Paste>>", paste_color)
             entry.bind("<Control-KeyPress>", paste_any_layout)
             var.trace_add('write', refresh_swatch)
-            return var
+            return var, block
+
+        icon_color_var = tk.BooleanVar(value=icon_color_enabled)
+        ttk.Checkbutton(
+            main_frame,
+            text=t("settings_icon_color_enabled"),
+            variable=icon_color_var,
+            command=lambda: (toggle_icon_color_fields(), fit_window())
+        ).pack(anchor=tk.W, pady=(0, 5))
 
         modes_row = ttk.Frame(main_frame)
         modes_row.pack(fill=tk.X, pady=(0, 15))
@@ -2387,7 +2413,8 @@ def create_settings_window():
         standard_desc_label = ttk.Label(standard_frame, text="", wraplength=220, foreground="gray")
         standard_desc_label.pack(anchor=tk.W, pady=(5, 0))
         on_standard_dimming_select()
-        standard_icon_color_var = build_icon_color_row(standard_frame, icon_colors[0], DEFAULT_ICON_COLORS[0])
+        standard_icon_color_var, standard_icon_block = build_icon_color_row(
+            standard_frame, icon_colors[0], DEFAULT_ICON_COLORS[0])
 
         gaming_frame = ttk.LabelFrame(modes_row, text=t("settings_gaming_mode"), padding="10")
         gaming_frame.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
@@ -2411,7 +2438,18 @@ def create_settings_window():
         gaming_desc_label = ttk.Label(gaming_frame, text="", wraplength=220, foreground="gray")
         gaming_desc_label.pack(anchor=tk.W, pady=(5, 0))
         on_gaming_dimming_select()
-        gaming_icon_color_var = build_icon_color_row(gaming_frame, icon_colors[1], DEFAULT_ICON_COLORS[1])
+        gaming_icon_color_var, gaming_icon_block = build_icon_color_row(
+            gaming_frame, icon_colors[1], DEFAULT_ICON_COLORS[1])
+
+        def toggle_icon_color_fields():
+            """Показывает поля цвета иконки, пока переключатель включён, и скрывает при выключении."""
+            for block in (standard_icon_block, gaming_icon_block):
+                if icon_color_var.get():
+                    block.pack(anchor=tk.W, fill=tk.X)
+                else:
+                    block.pack_forget()
+
+        toggle_icon_color_fields()
 
         custom_excluded_local = list(custom_excluded_processes)
         exclusions_frame = ttk.LabelFrame(main_frame, text=t("settings_exclusions_group"), padding="10")
@@ -2786,7 +2824,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.4.4") + " \n"
+            t("about_version", version="1.4.5") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
