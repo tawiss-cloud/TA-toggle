@@ -16,6 +16,7 @@ import base64
 import queue
 import sys
 import webbrowser
+import winreg
 
 # ===================== НАСТРОЙКИ =====================
 advanced_settings_enabled = False
@@ -84,6 +85,8 @@ TRANSLATIONS = {
         "err_delay_max": "Задержка не должна превышать 60 секунд",
         "settings_title": "Настройки",
         "settings_auto_switch": "Автоматическое переключение игровых режимов",
+        "settings_autostart": "Запускать вместе с Windows",
+        "notif_autostart_error": "Не удалось изменить автозапуск: {error}",
         "settings_media_players": "Включать медиаплееры (MPC, VLC, PotPlayer) в игровой режим",
         "settings_media_delay_label": "Задержка перед переключением для медиаплееров (сек):",
         "settings_exclusions_group": "Свои исключения",
@@ -194,6 +197,8 @@ TRANSLATIONS = {
         "err_delay_max": "Delay must not exceed 60 seconds",
         "settings_title": "Settings",
         "settings_auto_switch": "Automatic game mode switching",
+        "settings_autostart": "Start with Windows",
+        "notif_autostart_error": "Could not change autostart: {error}",
         "settings_media_players": "Treat media players (MPC, VLC, PotPlayer) as gaming mode",
         "settings_media_delay_label": "Delay before switching for media players (sec):",
         "settings_exclusions_group": "Custom exclusions",
@@ -950,6 +955,157 @@ def save_settings():
         last_save_error = str(e)
         log(f"Ошибка сохранения: {e}")
         return False
+
+# ===================== АВТОЗАПУСК С WINDOWS =====================
+# Автозапуск – ярлык в папке автозагрузки пользователя (shell:startup): права администратора не нужны,
+# запись в реестр (HKCU\...\Run) не используется – антивирусы относятся к ней настороженнее.
+# Ярлык создаётся напрямую через COM (IShellLinkW) – без PowerShell и сторонних модулей.
+# Источник истины – сама папка автозагрузки: файл можно удалить вручную или отключить в
+# «Диспетчере задач → Автозагрузка».
+AUTOSTART_LINK_NAME = "Monitor Mode Switcher.lnk"
+# Прежняя версия писала автозапуск в реестр – такую запись учитываем и при сохранении переносим в ярлык.
+_LEGACY_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_LEGACY_RUN_VALUE = "MonitorModeSwitcher"
+# Сюда «Диспетчер задач» записывает включение/выключение элементов папки автозагрузки.
+_STARTUP_APPROVED_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"
+
+_CLSID_SHELL_LINK = "{00021401-0000-0000-C000-000000000046}"
+_IID_ISHELLLINK_W = "{000214F9-0000-0000-C000-000000000046}"
+_IID_IPERSIST_FILE = "{0000010B-0000-0000-C000-000000000046}"
+_CLSCTX_INPROC_SERVER = 1
+
+class _GUID(ctypes.Structure):
+    _fields_ = [("Data1", ctypes.wintypes.DWORD), ("Data2", ctypes.wintypes.WORD),
+                ("Data3", ctypes.wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+_ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+_ole32.CoInitialize.argtypes = [ctypes.c_void_p]
+_ole32.CoInitialize.restype = ctypes.c_long
+_ole32.CoUninitialize.argtypes = []
+_ole32.CoUninitialize.restype = None
+_ole32.CLSIDFromString.argtypes = [ctypes.wintypes.LPCWSTR, ctypes.c_void_p]
+_ole32.CLSIDFromString.restype = ctypes.c_long
+_ole32.CoCreateInstance.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.wintypes.DWORD,
+                                    ctypes.c_void_p, ctypes.c_void_p]
+_ole32.CoCreateInstance.restype = ctypes.c_long
+
+def _guid(text):
+    g = _GUID()
+    hr = _ole32.CLSIDFromString(text, ctypes.byref(g))
+    if hr != 0:
+        raise OSError(f"CLSIDFromString: 0x{hr & 0xFFFFFFFF:08X}")
+    return g
+
+def _com_method(ptr, index, *argtypes):
+    """Метод COM-интерфейса по номеру в таблице виртуальных методов. Ошибочный HRESULT -> OSError."""
+    vtbl = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
+    proto = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, *argtypes)
+    func = proto(vtbl[index])
+    return lambda *args: func(ptr, *args)
+
+def _com_release(ptr):
+    if not ptr.value:
+        return
+    vtbl = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
+    ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl[2])(ptr)
+
+def _create_shortcut(link_path, target, arguments, working_dir, description):
+    init_hr = _ole32.CoInitialize(None)
+    need_uninit = init_hr in (0, 1)   # S_OK / S_FALSE; иначе (например, другая модель потоков) не трогаем
+    shell_link = ctypes.c_void_p()
+    persist_file = ctypes.c_void_p()
+    try:
+        hr = _ole32.CoCreateInstance(ctypes.byref(_guid(_CLSID_SHELL_LINK)), None, _CLSCTX_INPROC_SERVER,
+                                     ctypes.byref(_guid(_IID_ISHELLLINK_W)), ctypes.byref(shell_link))
+        if hr != 0:
+            raise OSError(f"CoCreateInstance: 0x{hr & 0xFFFFFFFF:08X}")
+        _com_method(shell_link, 20, ctypes.wintypes.LPCWSTR)(target)        # SetPath
+        _com_method(shell_link, 11, ctypes.wintypes.LPCWSTR)(arguments)     # SetArguments
+        _com_method(shell_link, 9, ctypes.wintypes.LPCWSTR)(working_dir)    # SetWorkingDirectory
+        _com_method(shell_link, 7, ctypes.wintypes.LPCWSTR)(description)    # SetDescription
+        _com_method(shell_link, 0, ctypes.c_void_p, ctypes.c_void_p)(       # QueryInterface(IPersistFile)
+            ctypes.byref(_guid(_IID_IPERSIST_FILE)), ctypes.byref(persist_file))
+        _com_method(persist_file, 6, ctypes.wintypes.LPCWSTR, ctypes.wintypes.BOOL)(link_path, True)  # Save
+    finally:
+        _com_release(persist_file)
+        _com_release(shell_link)
+        if need_uninit:
+            _ole32.CoUninitialize()
+
+def _autostart_link_path():
+    startup = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows",
+                           "Start Menu", "Programs", "Startup")
+    return os.path.join(startup, AUTOSTART_LINK_NAME)
+
+def _autostart_target():
+    """(программа, аргументы): для exe – он сам, для скрипта – pythonw.exe (без консольного окна) + путь к скрипту."""
+    if getattr(sys, 'frozen', False):
+        return sys.executable, ""
+    interpreter = sys.executable
+    pythonw = os.path.join(os.path.dirname(interpreter), "pythonw.exe")
+    if os.path.basename(interpreter).lower() == "python.exe" and os.path.exists(pythonw):
+        interpreter = pythonw
+    return interpreter, f'"{os.path.abspath(__file__)}"'
+
+def _legacy_run_entry_exists():
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _LEGACY_RUN_KEY, 0, winreg.KEY_READ) as key:
+            value, _ = winreg.QueryValueEx(key, _LEGACY_RUN_VALUE)
+        return bool(value)
+    except OSError:
+        return False
+
+def _delete_reg_value(key_path, value_name):
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, value_name)
+    except FileNotFoundError:
+        pass   # ключа или значения и так нет
+
+def _startup_approved_disabled():
+    """True, если ярлык отключён в «Диспетчере задач → Автозагрузка» (первый байт значения нечётный)."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _STARTUP_APPROVED_KEY, 0, winreg.KEY_READ) as key:
+            data, _ = winreg.QueryValueEx(key, AUTOSTART_LINK_NAME)
+        return bool(data) and (data[0] & 1) == 1
+    except OSError:
+        return False
+
+def is_autostart_enabled():
+    try:
+        if os.path.exists(_autostart_link_path()):
+            return not _startup_approved_disabled()
+        return _legacy_run_entry_exists()   # старая запись в реестре – при сохранении станет ярлыком
+    except Exception as e:
+        log(f"Ошибка проверки автозапуска: {e}")
+        return False
+
+def set_autostart(enabled):
+    """Включает/выключает автозапуск. Возвращает (успех, текст_ошибки).
+    При включении ярлык всегда пересоздаётся с текущим путём – так автозапуск не указывает на
+    старый файл, если программу переименовали или перенесли."""
+    try:
+        link_path = _autostart_link_path()
+        if enabled:
+            target, arguments = _autostart_target()
+            os.makedirs(os.path.dirname(link_path), exist_ok=True)
+            _create_shortcut(link_path, target, arguments, _APP_DIR, "Monitor Mode Switcher")
+            log(f"Автозапуск включён: {link_path} -> {target} {arguments}".rstrip())
+            # Ярлык создан – чистим прежнюю запись реестра и признак «отключено в диспетчере задач».
+            _delete_reg_value(_LEGACY_RUN_KEY, _LEGACY_RUN_VALUE)
+            _delete_reg_value(_STARTUP_APPROVED_KEY, AUTOSTART_LINK_NAME)
+        else:
+            try:
+                os.remove(link_path)
+            except FileNotFoundError:
+                pass
+            _delete_reg_value(_LEGACY_RUN_KEY, _LEGACY_RUN_VALUE)
+            _delete_reg_value(_STARTUP_APPROVED_KEY, AUTOSTART_LINK_NAME)
+            log("Автозапуск выключен")
+        return True, ""
+    except Exception as e:
+        log(f"Ошибка изменения автозапуска: {e}")
+        return False, str(e)
 
 def safe_monitor_operation(operation, monitor_idx=None):
     # get_monitors() может бросить исключение при перечислении мониторов –
@@ -2182,8 +2338,13 @@ def create_settings_window():
                 if language_changed:
                     current_language = selected_lang_code
 
+                autostart_ok, autostart_error = set_autostart(autostart_var.get())
+
                 if save_settings():
-                    show_notification(t("notif_settings_saved"))
+                    if autostart_ok:
+                        show_notification(t("notif_settings_saved"))
+                    else:
+                        show_notification(t("notif_autostart_error", error=autostart_error), error=True)
                 else:
                     # Значения в памяти уже новые и действуют до перезапуска – молча терять их при
                     # следующем запуске нельзя, поэтому сообщаем причину.
@@ -2289,6 +2450,13 @@ def create_settings_window():
 
         main_frame = ttk.Frame(scrollable_frame, padding="15")
         main_frame.pack(fill=tk.BOTH, expand=True)
+
+        autostart_var = tk.BooleanVar(value=is_autostart_enabled())
+        ttk.Checkbutton(
+            main_frame,
+            text=t("settings_autostart"),
+            variable=autostart_var
+        ).pack(anchor=tk.W, pady=(0, 10))
 
         auto_switch_var = tk.BooleanVar(value=auto_switch_enabled)
         auto_switch_check = ttk.Checkbutton(
@@ -2824,7 +2992,7 @@ def on_about(icon, item):
               brightness=modes[1]['brightness']) + "\n\n" +
             t("about_excluded_title") + "\n" +
             t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.4.5") + " \n"
+            t("about_version", version="1.4.6") + " \n"
         )
         info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
         info_label.pack(pady=10)
