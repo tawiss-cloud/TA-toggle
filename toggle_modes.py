@@ -8,7 +8,11 @@ from PIL import Image, ImageDraw
 import threading
 import tkinter as tk
 from tkinter import ttk, colorchooser
+from tkinter import font as tkfont
 import json
+import math
+import urllib.error
+import urllib.request
 import os
 import re
 import io
@@ -29,6 +33,22 @@ if getattr(sys, 'frozen', False):
     _APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
 else:
     _APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _resolve_data_dir():
+    """Папка настроек: %APPDATA%\\TA-toggle. Не зависит от места запуска и от прав на папку программы.
+    Если AppData недоступна, остаётся папка программы."""
+    base = os.environ.get("APPDATA")
+    if base:
+        path = os.path.join(base, "TA-toggle")
+        try:
+            os.makedirs(path, exist_ok=True)
+            return path
+        except OSError:
+            pass
+    return _APP_DIR
+
+DATA_DIR = _resolve_data_dir()
+# Отладочный лог пишется рядом с программой (не в AppData), в отличие от настроек.
 DEBUG_LOG_FILE = os.path.join(_APP_DIR, "monitor_debug.log")
 
 # Номер сборки Windows нужен только в запасном пути (когда V2-запрос HDR недоступен):
@@ -113,6 +133,51 @@ TRANSLATIONS = {
         "settings_notification_off": "Выключено",
         "settings_brightness_label": "Яркость (0-100):",
         "settings_dimming_label": "Локальное затемнение:",
+        "toggle_on": "Вкл",
+        "toggle_off": "Выкл",
+        "err_not_a_number": "Введите целое число",
+        "settings_version": "Версия {version}",
+        "update_available": "Доступна новая версия",
+        "update_checking": "Проверка…",
+        "update_latest": "Установлена последняя версия",
+        "update_error": "Не удалось проверить обновления",
+        "settings_auto_update": "Проверять обновления автоматически",
+        "settings_auto_update_desc": "Раз в 14 дней. Если выйдет новая версия, появится уведомление при запуске и значок со ссылкой слева внизу в настройках.",
+        "notif_update_available": "Доступна новая версия {version}. Ссылка доступна в настройках.",
+        "settings_nav_about": "О программе",
+        "settings_reset_title": "Сброс настроек",
+        "settings_reset_desc": "Вернуть все настройки программы к значениям по умолчанию.",
+        "settings_reset_button": "Сбросить",
+        "settings_reset_confirm": "Все настройки программы будут возвращены к значениям по умолчанию: режимы, Halo Control, горячая клавиша, исключения, тема, язык и автозапуск. Продолжить?",
+        "notif_settings_reset": "Настройки сброшены по умолчанию",
+        "settings_file_title": "Файл настроек",
+        "settings_open_folder": "Открыть папку",
+        "about_source_title": "Исходный код",
+        "settings_nav_general": "Общие",
+        "settings_nav_auto": "Автопереключение",
+        "settings_nav_modes": "Режимы монитора",
+        "settings_nav_advanced": "Дополнительно",
+        "settings_theme_title": "Тема оформления",
+        "settings_theme_desc": "Применяется при следующем открытии окон.",
+        "theme_dark": "Тёмная",
+        "theme_light": "Светлая",
+        "theme_system": "Как в системе",
+        "err_halo_range": "Halo Control: значение от 0 до 100",
+        "settings_section_general": "Общие",
+        "settings_section_auto": "Автоматическое переключение",
+        "settings_section_modes": "Режимы монитора",
+        "settings_exclusions_toggle_desc": "Не считать выбранные программы играми. Пока выключено, список не действует.",
+        "settings_brightness_title": "Яркость",
+        "settings_dimming_title": "Локальное затемнение",
+        "settings_halo_title": "Halo Control",
+        "settings_halo_desc": "Регулирует баланс подсветки: низкие значения подавляют ореолы (blooming), высокие — повышают яркость и детализацию мелких объектов.",
+        "settings_halo_value": "Уровень Halo (0–100)",
+        "about_hotkey_title": "Горячая клавиша",
+        "about_brightness_part": "яркость {brightness}",
+        "about_dimming_part": "локальное затемнение: {dimming}",
+        "about_halo_part": "Halo {halo}",
+        "about_excluded_custom": "Плюс свои исключения из настроек: {count}.",
+        "err_already_running": "Программа уже запущена (значок в области уведомлений).",
         "settings_hdr_group": "Настройки HDR",
         "settings_advanced_settings": "Дополнительные настройки",
         "settings_debug_group": "Отладка",
@@ -139,7 +204,7 @@ TRANSLATIONS = {
         "about_standard_line": "• Стандартный: {dimming} ({value}), яркость {brightness}",
         "about_gaming_line": "• Игровой: {dimming} ({value}), яркость {brightness}",
         "about_excluded_title": "Исключены из определения игр:",
-        "about_excluded_list": "Wallpaper Engine, браузеры (Chrome, Firefox, Edge, Brave, Opera,\nVivaldi, Яндекс и др.), Проводник, cmd, powershell, notepad,\nmspaint и свои исключения из настроек",
+        "about_excluded_list": "Wallpaper Engine, браузеры (Chrome, Firefox, Edge, Brave, Opera, Vivaldi, Яндекс и др.), Проводник, cmd, powershell, notepad, mspaint.",
         "about_version": "Версия: {version}",
         "menu_about": "О программе",
         "menu_settings": "Настройки",
@@ -225,6 +290,51 @@ TRANSLATIONS = {
         "settings_notification_off": "Off",
         "settings_brightness_label": "Brightness (0-100):",
         "settings_dimming_label": "Local dimming:",
+        "toggle_on": "On",
+        "toggle_off": "Off",
+        "err_not_a_number": "Enter a whole number",
+        "settings_version": "Version {version}",
+        "update_available": "A new version is available",
+        "update_checking": "Checking…",
+        "update_latest": "You have the latest version",
+        "update_error": "Could not check for updates",
+        "settings_auto_update": "Check for updates automatically",
+        "settings_auto_update_desc": "Every 14 days. If a new version is released, you get a notification at startup and an icon with a link at the bottom left of Settings.",
+        "notif_update_available": "A new version {version} is available. The link is available in Settings.",
+        "settings_nav_about": "About",
+        "settings_reset_title": "Reset settings",
+        "settings_reset_desc": "Restore all program settings to their defaults.",
+        "settings_reset_button": "Reset",
+        "settings_reset_confirm": "All program settings will be restored to their defaults: modes, Halo Control, hotkey, exclusions, theme, language and autostart. Continue?",
+        "notif_settings_reset": "Settings reset to defaults",
+        "settings_file_title": "Settings file",
+        "settings_open_folder": "Open folder",
+        "about_source_title": "Source code",
+        "settings_nav_general": "General",
+        "settings_nav_auto": "Auto-switching",
+        "settings_nav_modes": "Monitor modes",
+        "settings_nav_advanced": "Advanced",
+        "settings_theme_title": "Theme",
+        "settings_theme_desc": "Applies the next time windows are opened.",
+        "theme_dark": "Dark",
+        "theme_light": "Light",
+        "theme_system": "Follow system",
+        "err_halo_range": "Halo Control: value from 0 to 100",
+        "settings_section_general": "General",
+        "settings_section_auto": "Automatic switching",
+        "settings_section_modes": "Monitor modes",
+        "settings_exclusions_toggle_desc": "Don't treat selected programs as games. While off, the list has no effect.",
+        "settings_brightness_title": "Brightness",
+        "settings_dimming_title": "Local dimming",
+        "settings_halo_title": "Halo Control",
+        "settings_halo_desc": "Balances the backlight: low values suppress halos (blooming), high values increase brightness and detail of small objects.",
+        "settings_halo_value": "Halo level (0–100)",
+        "about_hotkey_title": "Hotkey",
+        "about_brightness_part": "brightness {brightness}",
+        "about_dimming_part": "local dimming: {dimming}",
+        "about_halo_part": "Halo {halo}",
+        "about_excluded_custom": "Plus your custom exclusions: {count}.",
+        "err_already_running": "The program is already running (see the tray icon).",
         "settings_hdr_group": "HDR settings",
         "settings_advanced_settings": "Advanced settings",
         "settings_debug_group": "Debug",
@@ -251,7 +361,7 @@ TRANSLATIONS = {
         "about_standard_line": "• Standard: {dimming} ({value}), brightness {brightness}",
         "about_gaming_line": "• Gaming: {dimming} ({value}), brightness {brightness}",
         "about_excluded_title": "Excluded from game detection:",
-        "about_excluded_list": "Wallpaper Engine, browsers (Chrome, Firefox, Edge, Brave, Opera,\nVivaldi, Yandex, etc.), Explorer, cmd, powershell, notepad,\nmspaint and your custom exclusions from settings",
+        "about_excluded_list": "Wallpaper Engine, browsers (Chrome, Firefox, Edge, Brave, Opera, Vivaldi, Yandex, etc.), Explorer, cmd, powershell, notepad, mspaint.",
         "about_version": "Version: {version}",
         "menu_about": "About",
         "menu_settings": "Settings",
@@ -332,6 +442,7 @@ MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
 MOD_WIN = 0x0008
+MOD_NOREPEAT = 0x4000  # без автоповтора WM_HOTKEY при удержании клавиши
 VK_Z = 0x5A
 
 DEFAULT_HOTKEY_MOD = MOD_CONTROL | MOD_ALT
@@ -365,6 +476,9 @@ VCP_LOCAL_DIMMING = 0x99
 VCP_LOCAL_DIMMING_ALT = 0x47
 VCP_BRIGHTNESS = 0x10
 VCP_COLOR_PRESET = 0x14
+VCP_HALO = 0x46
+# Пауза между записью 0x99 и парной записью (0x47 / 0x46): без неё вторая запись может молча теряться.
+VCP_PAIR_DELAY = 0.08
 
 # ===================== HDR через Windows (Display Config API) =====================
 # Для всех сценариев, КРОМЕ медиаплеера: плееры с HDR passthrough шлют HDR мимо
@@ -456,6 +570,17 @@ _dc_user32.EnumDisplayMonitors.argtypes = [
 _dc_user32.EnumDisplayMonitors.restype = ctypes.wintypes.BOOL
 
 
+_DC_GET_TARGET_NAME = 2
+
+class _DC_TARGET_DEVICE_NAME(ctypes.Structure):
+    _fields_ = [("header", _DC_HEADER), ("flags", ctypes.wintypes.UINT),
+                ("outputTechnology", ctypes.wintypes.UINT),
+                ("edidManufactureId", ctypes.wintypes.WORD), ("edidProductCodeId", ctypes.wintypes.WORD),
+                ("connectorInstance", ctypes.wintypes.UINT),
+                ("monitorFriendlyDeviceName", ctypes.wintypes.WCHAR * 64),
+                ("monitorDevicePath", ctypes.wintypes.WCHAR * 128)]
+
+
 def _dc_active_paths():
     num_paths = ctypes.wintypes.UINT()
     num_modes = ctypes.wintypes.UINT()
@@ -529,6 +654,31 @@ def _dc_target_path_for_monitor(index, paths):
     return paths[max(0, min(index, len(paths) - 1))], False
 
 
+def _dc_device_path_for_monitor(index):
+    """Устойчивый идентификатор монитора с индексом index (device path цели DisplayConfig).
+    В отличие от индекса monitorcontrol не меняется при смене порядка перечисления. None – не удалось."""
+    try:
+        gdi = _dc_monitor_gdi_name(index)
+        if not gdi:
+            return None
+        for p in _dc_active_paths():
+            try:
+                if _dc_source_gdi_name(p.sourceInfo.adapterId, p.sourceInfo.id) != gdi:
+                    continue
+            except Exception:
+                continue
+            req = _DC_TARGET_DEVICE_NAME()
+            req.header.type = _DC_GET_TARGET_NAME
+            req.header.size = ctypes.sizeof(_DC_TARGET_DEVICE_NAME)
+            req.header.adapterId = p.targetInfo.adapterId
+            req.header.id = p.targetInfo.id
+            if _dc_user32.DisplayConfigGetDeviceInfo(ctypes.byref(req.header)) == 0 and req.monitorDevicePath:
+                return req.monitorDevicePath
+    except Exception as e:
+        log(f"Не удалось получить device path монитора {index}: {e}")
+    return None
+
+
 def _try_advanced_color_v2(path):
     """V2 (GET_ADVANCED_COLOR_INFO_2): активный режим цвета – HDR=2, WCG=1 (автоуправление
     цветом), SDR=0. Насколько известно, появился в Windows 11 24H2, на более ранних сборках
@@ -596,11 +746,13 @@ manual_override_active = False
 manual_override_waiting = False
 
 modes = []
-SETTINGS_FILE = os.path.join(_APP_DIR, "monitor_settings.json")
+SETTINGS_FILE = os.path.join(DATA_DIR, "monitor_settings.json")
 
 monitor_index = None
+monitor_device_path = None  # устойчивый идентификатор выбранного монитора (DisplayConfig device path)
 hotkey_thread_id = None
 stop_hotkey_thread = False
+app_exiting = False  # выставляется при выходе из программы: останавливает цикл Tk
 tray_icon = None
 
 # Цвет центра иконки в трее для каждого режима: [стандартный, игровой].
@@ -725,6 +877,19 @@ EXCLUDED_PROCESSES = [
 
 # Исключения, добавленные пользователем (имена exe в нижнем регистре); хранятся в настройках.
 custom_excluded_processes = []
+custom_exclusions_enabled = False  # по умолчанию выключено: список не действует, блок настроек скрыт
+halo_enabled = False  # Halo Control: общий переключатель для обоих режимов
+halo_verified_value = None  # значение Halo, уже сверенное с монитором (одинаковые уровни в обоих режимах)
+halo_readable = None  # умеет ли монитор отдавать текущий Halo (0x46): None – не проверяли, False – нет
+ui_theme = "dark"  # тема окон: dark (по умолчанию) / light / system
+# Версия программы и репозиторий для проверки обновлений. При выпуске новой версии меняется только APP_VERSION.
+APP_VERSION = "1.5.0"
+GITHUB_REPO = "tawiss-cloud/TA-toggle"
+UPDATE_CHECK_INTERVAL = 14 * 24 * 3600  # автоматическая проверка – раз в 14 дней
+auto_update_check = False   # автоматическая проверка обновлений (по умолчанию выключена)
+last_update_check = 0.0     # время последней проверки (unix-секунды)
+update_info = None          # {"version": ..., "url": ...} – найденная новая версия, пока она новее установленной
+legacy_migrated = False     # настройки уже перенесены из папки программы в AppData
 
 # Последние позиции окон ("settings", "about"): {"x": int, "y": int}; хранятся в настройках.
 window_positions = {}
@@ -742,7 +907,8 @@ def normalize_process_name(text):
 
 def is_excluded_process(process_name):
     name = process_name.lower()
-    return name in [p.lower() for p in EXCLUDED_PROCESSES] or name in custom_excluded_processes
+    return (name in [p.lower() for p in EXCLUDED_PROCESSES]
+            or (custom_exclusions_enabled and name in custom_excluded_processes))
 
 def _win32_window_origin(win):
     """Реальная позиция окна от самой Windows (GetWindowRect внешней рамки) или None.
@@ -786,7 +952,16 @@ def get_window_start_position(key, width, height):
     y = max(vy, min(pos["y"], vy + vh - height))
     return x, y
 
+# Все записи файла настроек идут под одной блокировкой: save_settings() вызывается из окна настроек, из фонового
+# потока проверки обновлений и из потока монитора, а remember_window_position() читает и переписывает тот же файл.
+# Блокировка охватывает и сборку данных, и запись, поэтому устаревший снимок не затрёт более свежий.
+_settings_lock = threading.RLock()
+
 def remember_window_position(key, win):
+    with _settings_lock:
+        _remember_window_position_unlocked(key, win)
+
+def _remember_window_position_unlocked(key, win):
     """Запоминает позицию окна и дописывает её в файл настроек (остальные поля не трогает)."""
     try:
         x, y = get_window_origin(win)
@@ -846,10 +1021,66 @@ def request_hotkey_update(new_mod, new_vk):
         except Exception as e:
             log(f"Ошибка отправки сообщения об обновлении горячей клавиши: {e}")
 
+def _migrate_legacy_settings():
+    """Прежние версии хранили monitor_settings.json рядом с программой. Переносим его в папку данных
+    (AppData\\TA-toggle) и удаляем старый файл. Старый файл читаем и проверяем до любой записи, поэтому
+    повреждённый файл ничего не затирает. В перенесённый файл пишется отметка migrated_from_legacy: если удалить
+    старый файл не получилось (например, нет прав на папку программы), он больше не копируется повторно поверх
+    новых настроек, а удаление пробуется снова."""
+    legacy = os.path.join(_APP_DIR, "monitor_settings.json")
+    try:
+        if not os.path.exists(legacy) or os.path.abspath(legacy) == os.path.abspath(SETTINGS_FILE):
+            return
+        already = False
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                    already = bool(json.load(f).get('migrated_from_legacy'))
+            except Exception:
+                already = False
+        if not already:
+            with open(legacy, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            data['migrated_from_legacy'] = True
+            tmp_path = SETTINGS_FILE + ".tmp"
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, SETTINGS_FILE)
+            log(f"Настройки перенесены: {legacy} -> {SETTINGS_FILE}")
+        os.remove(legacy)
+        log("Старый файл настроек удалён")
+    except Exception as e:
+        log(f"Не удалось перенести настройки в AppData: {e}")
+
+def _sanitize_modes(raw):
+    """Проверяет режимы из файла настроек. Не список из двух словарей – None (останутся режимы по умолчанию).
+    Некорректные поля отдельного режима заменяются значениями по умолчанию, так что вручную испорченный файл
+    не приводит к KeyError/TypeError при запуске или сохранении."""
+    if not isinstance(raw, list) or len(raw) != 2 or not all(isinstance(m, dict) for m in raw):
+        if raw is not None:
+            log("Режимы в файле настроек повреждены – используются значения по умолчанию")
+        return None
+    def valid_int(value, low, high):
+        return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+    valid_dimming = {o["value"] for o in get_local_dimming_options()}
+    result = []
+    for default, item in zip(get_default_modes(), raw):
+        mode = dict(default)
+        if valid_int(item.get("brightness"), 0, 100):
+            mode["brightness"] = item["brightness"]
+        if item.get("local_dimming") in valid_dimming and not isinstance(item.get("local_dimming"), bool):
+            mode["local_dimming"] = item["local_dimming"]
+        if valid_int(item.get("halo"), 0, 100):
+            mode["halo"] = item["halo"]
+        result.append(mode)
+    return result
+
 def load_settings():
+    _migrate_legacy_settings()
     global modes, hdr_settings, auto_switch_enabled, media_players_enabled, media_delay_seconds
     global HOTKEY_MODIFIERS, HOTKEY_VK, current_language, advanced_settings_enabled, debug_enabled
-    global notification_style, icon_color_enabled
+    global notification_style, icon_color_enabled, monitor_device_path, custom_exclusions_enabled, halo_enabled, ui_theme
+    global auto_update_check, last_update_check, update_info, legacy_migrated
     language_loaded = False
     modes_loaded = False
     try:
@@ -859,11 +1090,17 @@ def load_settings():
                 if 'language' in data and data['language'] in SUPPORTED_LANGUAGES:
                     current_language = data['language']
                     language_loaded = True
-                if 'modes' in data and isinstance(data['modes'], list) and len(data['modes']) == 2:
-                    modes = data['modes']
+                repaired_modes = _sanitize_modes(data.get('modes'))
+                if repaired_modes is not None:
+                    modes = repaired_modes
                     modes_loaded = True
-                if 'hdr_settings' in data:
-                    hdr_settings.update(data['hdr_settings'])
+                if isinstance(data.get('hdr_settings'), dict):
+                    hs = data['hdr_settings']
+                    if isinstance(hs.get('auto_set_preset'), bool):
+                        hdr_settings['auto_set_preset'] = hs['auto_set_preset']
+                    pn = hs.get('preset_number')
+                    if isinstance(pn, int) and not isinstance(pn, bool) and 0 <= pn <= 255:
+                        hdr_settings['preset_number'] = pn
                 if isinstance(data.get('icon_colors'), list) and len(data['icon_colors']) == 2:
                     icon_colors[:] = [normalize_icon_color(c) or d
                                       for c, d in zip(data['icon_colors'], DEFAULT_ICON_COLORS)]
@@ -873,24 +1110,48 @@ def load_settings():
                     icon_color_enabled = data['icon_color_enabled']
                 if data.get('notification_style') in NOTIFICATION_STYLES:
                     notification_style = data['notification_style']
-                if 'auto_switch_enabled' in data:
+                if isinstance(data.get('monitor_device_path'), str) and data['monitor_device_path']:
+                    monitor_device_path = data['monitor_device_path']
+                if isinstance(data.get('auto_switch_enabled'), bool):
                     auto_switch_enabled = data['auto_switch_enabled']
-                if 'media_players_enabled' in data:
+                if isinstance(data.get('media_players_enabled'), bool):
                     media_players_enabled = data['media_players_enabled']
-                if 'media_delay_seconds' in data:
-                    media_delay_seconds = data['media_delay_seconds']
+                md = data.get('media_delay_seconds')
+                if isinstance(md, int) and not isinstance(md, bool) and 1 <= md <= 60:
+                    media_delay_seconds = md
                 if isinstance(data.get('custom_excluded_processes'), list):
                     names = (normalize_process_name(x) for x in data['custom_excluded_processes'])
                     custom_excluded_processes[:] = list(dict.fromkeys(n for n in names if n))
+                # Нет сохранённого флага (настройки старой версии): список, который пользователь уже собрал, не отключаем.
+                if isinstance(data.get('custom_exclusions_enabled'), bool):
+                    custom_exclusions_enabled = data['custom_exclusions_enabled']
+                else:
+                    custom_exclusions_enabled = bool(custom_excluded_processes)
+                if isinstance(data.get('halo_enabled'), bool):
+                    halo_enabled = data['halo_enabled']
+                else:  # настройки старой версии: Halo был включён, если задан хотя бы в одном режиме
+                    halo_enabled = any(isinstance(m.get('halo'), int) for m in modes)
+                if data.get('ui_theme') in ('dark', 'light', 'system'):
+                    ui_theme = data['ui_theme']
+                legacy_migrated = bool(data.get('migrated_from_legacy', False))
+                auto_update_check = bool(data.get('auto_update_check', False))
+                if isinstance(data.get('last_update_check'), (int, float)):
+                    last_update_check = float(data['last_update_check'])
+                info = data.get('update_info')
+                if (isinstance(info, dict) and isinstance(info.get('version'), str)
+                        and isinstance(info.get('url'), str) and _version_newer(info['version'], APP_VERSION)):
+                    update_info = {'version': info['version'], 'url': info['url']}
+                else:
+                    update_info = None
                 if isinstance(data.get('window_positions'), dict):
                     for key in ("settings", "about"):
                         pos = data['window_positions'].get(key)
                         if (isinstance(pos, dict) and isinstance(pos.get('x'), int)
                                 and isinstance(pos.get('y'), int)):
                             window_positions[key] = {"x": pos['x'], "y": pos['y']}
-                if 'advanced_settings_enabled' in data:
+                if isinstance(data.get('advanced_settings_enabled'), bool):
                     advanced_settings_enabled = data['advanced_settings_enabled']
-                if 'debug_enabled' in data:
+                if isinstance(data.get('debug_enabled'), bool):
                     debug_enabled = data['debug_enabled']
                 if 'hotkey_modifiers' in data and 'hotkey_vk' in data:
                     mod_val = data['hotkey_modifiers']
@@ -914,12 +1175,27 @@ last_save_error = ""
 
 def write_json_atomic(path, data):
     """Пишет JSON во временный файл рядом и подменяет им целевой: оборванная запись (сбой, нехватка места)
-    не оставит обрезанный файл настроек."""
-    tmp = path + ".tmp"
+    не оставит обрезанный файл настроек. Имя временного файла уникально для процесса и потока, а замена
+    повторяется, если целевой файл на миг занят (антивирус, индексатор)."""
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        for attempt in range(3):
+            try:
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                break
+            except RuntimeError:   # список или словарь изменили в другом потоке во время записи – пробуем ещё раз
+                if attempt == 2:
+                    raise
+                time.sleep(0.02)
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
     except Exception:
         try:
             os.remove(tmp)
@@ -928,6 +1204,10 @@ def write_json_atomic(path, data):
         raise
 
 def save_settings():
+    with _settings_lock:
+        return _save_settings_unlocked()
+
+def _save_settings_unlocked():
     global last_save_error
     try:
         data = {
@@ -937,9 +1217,17 @@ def save_settings():
             'icon_colors': list(icon_colors),
             'icon_color_enabled': icon_color_enabled,
             'notification_style': notification_style,
+            'monitor_device_path': monitor_device_path,
             'auto_switch_enabled': auto_switch_enabled,
             'media_players_enabled': media_players_enabled,
             'media_delay_seconds': media_delay_seconds,
+            'custom_exclusions_enabled': custom_exclusions_enabled,
+            'halo_enabled': halo_enabled,
+            'ui_theme': ui_theme,
+            'migrated_from_legacy': legacy_migrated,
+            'auto_update_check': auto_update_check,
+            'last_update_check': last_update_check,
+            'update_info': update_info,
             'custom_excluded_processes': list(custom_excluded_processes),
             'window_positions': window_positions,
             'advanced_settings_enabled': advanced_settings_enabled,
@@ -956,16 +1244,93 @@ def save_settings():
         log(f"Ошибка сохранения: {e}")
         return False
 
+# ===================== ПРОВЕРКА ОБНОВЛЕНИЙ =====================
+def _parse_version(text):
+    m = re.search(r"\d+(?:\.\d+)*", text or "")
+    return tuple(int(x) for x in m.group(0).split(".")) if m else None
+
+def _version_newer(candidate, current):
+    a, b = _parse_version(candidate), _parse_version(current)
+    if not a or not b:
+        return False
+    n = max(len(a), len(b))
+    return a + (0,) * (n - len(a)) > b + (0,) * (n - len(b))
+
+def _github_get(path):
+    req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_REPO}{path}",
+                                 headers={"User-Agent": f"TA-toggle/{APP_VERSION}",
+                                          "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return json.load(resp)
+
+def fetch_latest_version():
+    """(версия, ссылка на страницу версии) самой свежей версии на GitHub; None, если версий там нет.
+    Сначала смотрим опубликованные релизы, а если их нет – теги репозитория."""
+    try:
+        data = _github_get("/releases/latest")
+        version = _parse_version(data.get("tag_name", ""))
+        if version:
+            url = data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases/tag/{data.get('tag_name')}"
+            return ".".join(str(x) for x in version), url
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+    best = None
+    for tag in _github_get("/tags?per_page=50"):
+        name = tag.get("name", "")
+        if _parse_version(name) and (best is None or _version_newer(name, best)):
+            best = name
+    if best is None:
+        return None
+    return ".".join(str(x) for x in _parse_version(best)), f"https://github.com/{GITHUB_REPO}/releases/tag/{best}"
+
+def check_for_update():
+    """Сравнивает установленную версию с последней на GitHub и запоминает результат в настройках.
+    Возвращает ("available", версия, ссылка), ("latest",) или ("error", текст)."""
+    global last_update_check, update_info
+    try:
+        found = fetch_latest_version()
+    except Exception as e:
+        log(f"Проверка обновлений не удалась: {e}")
+        return ("error", str(e))
+    last_update_check = time.time()
+    if found is None:   # в репозитории пока нет ни релизов, ни тегов – новее установленной ничего нет
+        update_info = None
+        save_settings()
+        return ("latest",)
+    version, url = found
+    if _version_newer(version, APP_VERSION):
+        update_info = {"version": version, "url": url}
+        save_settings()
+        return ("available", version, url)
+    update_info = None
+    save_settings()
+    return ("latest",)
+
+def check_update_and_notify():
+    """Проверка обновлений с всплывающим уведомлением, если найдена новая версия (для автопроверки)."""
+    result = check_for_update()
+    if result[0] == "available":
+        show_notification(t("notif_update_available", version=result[1]))
+    return result
+
+def maybe_auto_check_update():
+    """Автопроверка при запуске: если включена и с прошлой проверки прошло 14 дней. Нашли новую версию – уведомление."""
+    if not auto_update_check:
+        return
+    elapsed = time.time() - last_update_check
+    if 0 <= elapsed < UPDATE_CHECK_INTERVAL:
+        return
+    check_update_and_notify()
+
 # ===================== АВТОЗАПУСК С WINDOWS =====================
-# Автозапуск – ярлык в папке автозагрузки пользователя (shell:startup): права администратора не нужны,
-# запись в реестр (HKCU\...\Run) не используется – антивирусы относятся к ней настороженнее.
+# Автозапуск – ярлык в папке автозагрузки пользователя (shell:startup): права администратора не нужны.
 # Ярлык создаётся напрямую через COM (IShellLinkW) – без PowerShell и сторонних модулей.
 # Источник истины – сама папка автозагрузки: файл можно удалить вручную или отключить в
 # «Диспетчере задач → Автозагрузка».
-AUTOSTART_LINK_NAME = "Monitor Mode Switcher.lnk"
-# Прежняя версия писала автозапуск в реестр – такую запись учитываем и при сохранении переносим в ярлык.
-_LEGACY_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-_LEGACY_RUN_VALUE = "MonitorModeSwitcher"
+AUTOSTART_LINK_NAME = "TA-toggle.lnk"
+# Ярлык прежних версий: учитываем его и при сохранении заменяем новым (иначе программа стартовала бы дважды).
+LEGACY_AUTOSTART_LINK_NAME = "Monitor Mode Switcher.lnk"
 # Сюда «Диспетчер задач» записывает включение/выключение элементов папки автозагрузки.
 _STARTUP_APPROVED_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"
 
@@ -1032,10 +1397,10 @@ def _create_shortcut(link_path, target, arguments, working_dir, description):
         if need_uninit:
             _ole32.CoUninitialize()
 
-def _autostart_link_path():
+def _autostart_link_path(name=AUTOSTART_LINK_NAME):
     startup = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows",
                            "Start Menu", "Programs", "Startup")
-    return os.path.join(startup, AUTOSTART_LINK_NAME)
+    return os.path.join(startup, name)
 
 def _autostart_target():
     """(программа, аргументы): для exe – он сам, для скрипта – pythonw.exe (без консольного окна) + путь к скрипту."""
@@ -1047,14 +1412,6 @@ def _autostart_target():
         interpreter = pythonw
     return interpreter, f'"{os.path.abspath(__file__)}"'
 
-def _legacy_run_entry_exists():
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _LEGACY_RUN_KEY, 0, winreg.KEY_READ) as key:
-            value, _ = winreg.QueryValueEx(key, _LEGACY_RUN_VALUE)
-        return bool(value)
-    except OSError:
-        return False
-
 def _delete_reg_value(key_path, value_name):
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
@@ -1062,20 +1419,28 @@ def _delete_reg_value(key_path, value_name):
     except FileNotFoundError:
         pass   # ключа или значения и так нет
 
-def _startup_approved_disabled():
+def _startup_approved_disabled(name=AUTOSTART_LINK_NAME):
     """True, если ярлык отключён в «Диспетчере задач → Автозагрузка» (первый байт значения нечётный)."""
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _STARTUP_APPROVED_KEY, 0, winreg.KEY_READ) as key:
-            data, _ = winreg.QueryValueEx(key, AUTOSTART_LINK_NAME)
+            data, _ = winreg.QueryValueEx(key, name)
         return bool(data) and (data[0] & 1) == 1
     except OSError:
         return False
 
+def _remove_autostart_link(name):
+    try:
+        os.remove(_autostart_link_path(name))
+    except FileNotFoundError:
+        pass
+    _delete_reg_value(_STARTUP_APPROVED_KEY, name)
+
 def is_autostart_enabled():
     try:
-        if os.path.exists(_autostart_link_path()):
-            return not _startup_approved_disabled()
-        return _legacy_run_entry_exists()   # старая запись в реестре – при сохранении станет ярлыком
+        for name in (AUTOSTART_LINK_NAME, LEGACY_AUTOSTART_LINK_NAME):
+            if os.path.exists(_autostart_link_path(name)):
+                return not _startup_approved_disabled(name)
+        return False
     except Exception as e:
         log(f"Ошибка проверки автозапуска: {e}")
         return False
@@ -1083,29 +1448,38 @@ def is_autostart_enabled():
 def set_autostart(enabled):
     """Включает/выключает автозапуск. Возвращает (успех, текст_ошибки).
     При включении ярлык всегда пересоздаётся с текущим путём – так автозапуск не указывает на
-    старый файл, если программу переименовали или перенесли."""
+    старый файл, если программу переименовали или перенесли. Ярлык прежней версии удаляется."""
     try:
-        link_path = _autostart_link_path()
         if enabled:
+            link_path = _autostart_link_path()
             target, arguments = _autostart_target()
             os.makedirs(os.path.dirname(link_path), exist_ok=True)
-            _create_shortcut(link_path, target, arguments, _APP_DIR, "Monitor Mode Switcher")
+            _create_shortcut(link_path, target, arguments, _APP_DIR, "TA-toggle")
             log(f"Автозапуск включён: {link_path} -> {target} {arguments}".rstrip())
-            # Ярлык создан – чистим прежнюю запись реестра и признак «отключено в диспетчере задач».
-            _delete_reg_value(_LEGACY_RUN_KEY, _LEGACY_RUN_VALUE)
-            _delete_reg_value(_STARTUP_APPROVED_KEY, AUTOSTART_LINK_NAME)
+            _delete_reg_value(_STARTUP_APPROVED_KEY, AUTOSTART_LINK_NAME)   # снимаем «отключено в диспетчере задач»
+            _remove_autostart_link(LEGACY_AUTOSTART_LINK_NAME)
         else:
-            try:
-                os.remove(link_path)
-            except FileNotFoundError:
-                pass
-            _delete_reg_value(_LEGACY_RUN_KEY, _LEGACY_RUN_VALUE)
-            _delete_reg_value(_STARTUP_APPROVED_KEY, AUTOSTART_LINK_NAME)
+            _remove_autostart_link(AUTOSTART_LINK_NAME)
+            _remove_autostart_link(LEGACY_AUTOSTART_LINK_NAME)
             log("Автозапуск выключен")
         return True, ""
     except Exception as e:
         log(f"Ошибка изменения автозапуска: {e}")
         return False, str(e)
+
+def migrate_legacy_autostart():
+    """Прежняя версия создавала ярлык «Monitor Mode Switcher». Если автозапуск у пользователя был включён –
+    заменяем его ярлыком TA-toggle; если был отключён в диспетчере задач – просто убираем прежний ярлык."""
+    try:
+        legacy = _autostart_link_path(LEGACY_AUTOSTART_LINK_NAME)
+        if not os.path.exists(legacy):
+            return
+        if os.path.exists(_autostart_link_path()) or _startup_approved_disabled(LEGACY_AUTOSTART_LINK_NAME):
+            _remove_autostart_link(LEGACY_AUTOSTART_LINK_NAME)
+        else:
+            set_autostart(True)
+    except Exception as e:
+        log(f"Ошибка переноса прежнего автозапуска: {e}")
 
 def safe_monitor_operation(operation, monitor_idx=None):
     # get_monitors() может бросить исключение при перечислении мониторов –
@@ -1407,6 +1781,15 @@ def sync_current_mode():
         diff_gaming = abs(brightness - modes[1]["brightness"])
         current_mode_index = 0 if diff_standard < diff_gaming else 1
 
+def _remember_monitor(i):
+    """Запоминает device path выбранного монитора (сохраняет настройки, только если он изменился)."""
+    global monitor_device_path
+    path = _dc_device_path_for_monitor(i)
+    if path and path != monitor_device_path:
+        monitor_device_path = path
+        log(f"Монитор привязан к device path: {path}")
+        save_settings()
+
 def find_titan_army_monitor():
     global monitor_index
     # get_monitors() может бросить исключение при перечислении – перехватываем,
@@ -1417,6 +1800,20 @@ def find_titan_army_monitor():
         log(f"Ошибка перечисления мониторов: {e}")
         return False
     log(f"Найдено мониторов: {len(monitors)}")
+    if monitor_device_path:
+        for i, monitor in enumerate(monitors):
+            if _dc_device_path_for_monitor(i) != monitor_device_path:
+                continue
+            try:
+                with monitor:
+                    pass
+            except Exception as e:
+                log(f"Сохранённый монитор (индекс {i}) недоступен: {e}")
+                continue
+            monitor_index = i
+            log(f"Найден сохранённый монитор по device path (индекс {i})")
+            return True
+        log("Сохранённый монитор не найден – автоопределение")
     for i, monitor in enumerate(monitors):
         try:
             with monitor:
@@ -1425,6 +1822,7 @@ def find_titan_army_monitor():
                     if maximum >= 14:
                         monitor_index = i
                         log(f"Найден Titan Army (индекс {i})")
+                        _remember_monitor(i)
                         return True
                 except Exception as e:
                     log(f"Монитор {i}: VCP 0xE0 не поддерживается")
@@ -1493,23 +1891,87 @@ def apply_window_icon(win):
     except Exception as e:
         log(f"Ошибка установки иконки окна: {e}")
 
-def set_local_dimming(monitor, value, retries=3):
-    for attempt in range(retries):
+def ensure_halo(monitor, target):
+    """Halo Control для текущего режима. Одинаковые уровни в обоих режимах: один раз сверяем с монитором
+    (читаем 0x46) и пишем только при расхождении, дальше не трогаем. Разные уровни: пишем при каждой смене режима.
+    Многие мониторы не отдают текущее значение Halo (код 0x46 только для записи): тогда сверка невозможна,
+    значение один раз записывается без неё, и попытки чтения в этом сеансе больше не повторяются.
+    Возвращает "cached" (уже сверено/записано ранее, монитор не трогали), "verified" (на мониторе уже нужное
+    значение), "written" (значение записано) или False (записать не удалось)."""
+    global halo_verified_value, halo_readable
+    same = len(modes) == 2 and modes[0].get("halo") == modes[1].get("halo")
+    if same and halo_verified_value == target:
+        return "cached"
+    time.sleep(VCP_PAIR_DELAY)   # пауза после записи затемнения, прежде чем обращаться к монитору снова
+    if same and halo_readable is not False:
         try:
-            monitor.vcp.set_vcp_feature(VCP_LOCAL_DIMMING, value)
-            try:
-                monitor.vcp.set_vcp_feature(VCP_LOCAL_DIMMING_ALT, value)
-            except Exception:
-                pass
-            return True
+            current = monitor.vcp.get_vcp_feature(VCP_HALO)[0]
+            halo_readable = True
         except Exception as e:
-            log(f"Ошибка установки LD (попытка {attempt+1}/{retries}): {e}")
-            if attempt < retries - 1:
-                time.sleep(0.3)
-            else:
-                log("Не удалось установить LD после нескольких попыток")
-                return False
+            current = None
+            halo_readable = False
+            log(f"Монитор не отдаёт текущее значение Halo (VCP 0x46): {str(e).rstrip('.')}. Сверка невозможна – значение записывается без неё")
+        if current == target:
+            halo_verified_value = target
+            log(f"Halo уже {target} на мониторе, дальше не трогаем")
+            return "verified"
+    ok = set_halo(monitor, target)
+    halo_verified_value = target if (ok and same) else None
+    return "written" if ok else False
+
+class PairWriteError(Exception):
+    """Первая запись пары (0x99) удалась, а вторая (0x47 для LD, 0x46 для Halo) – нет."""
+
+# Пауза между записью 0x99 и парной записью. Подбирается на ходу: если после паузы парная запись даёт
+# ошибку шины, следующая попытка идёт с другой паузой (с 0 – как работали прежние версии), и рабочий
+# вариант запоминается до конца сеанса.
+ld_pair_delay = VCP_PAIR_DELAY
+
+def write_vcp_pair(monitor, code, value, delay):
+    """Пишет 0x99, ждёт delay секунд и пишет парный регистр code (0x47 для LD, 0x46 для Halo).
+    Ошибка первой записи пробрасывается как есть, второй – как PairWriteError."""
+    monitor.vcp.set_vcp_feature(VCP_LOCAL_DIMMING, value)
+    if delay:
+        time.sleep(delay)
+    try:
+        monitor.vcp.set_vcp_feature(code, value)
+    except Exception as e:
+        raise PairWriteError(str(e)) from e
+
+def _set_with_pair(monitor, code, value, label, retries=3):
+    """Записывает пару 0x99 + code с повторами. Провал парной записи – провал всей установки (раньше он
+    молча считался успехом, и режим оставался со старым значением без повторов и «дожима»).
+    Исключение: ошибка без упоминания шины I2C значит, что монитор не принимает сам код (не сбой передачи) –
+    тогда, как и раньше, считаем успешной запись 0x99."""
+    global ld_pair_delay
+    second_write_failed = False
+    for attempt in range(retries):
+        delay = ld_pair_delay
+        try:
+            write_vcp_pair(monitor, code, value, delay)
+            if second_write_failed:
+                log(f"{label}: запись удалась с паузой {int(delay * 1000)} мс – используем её дальше")
+            return True
+        except PairWriteError as e:
+            second_write_failed = True
+            log(f"{label}: запись VCP 0x{code:02X} не удалась (пауза {int(delay * 1000)} мс, "
+                f"попытка {attempt + 1}/{retries}): {e}")
+            if "I2C" not in str(e):
+                log(f"{label}: монитор не принимает VCP 0x{code:02X} – считаем установленным через 0x99")
+                return True
+            ld_pair_delay = 0.0 if delay > 0 else VCP_PAIR_DELAY   # следующая попытка – с другой паузой
+        except Exception as e:
+            log(f"Ошибка установки {label} (попытка {attempt + 1}/{retries}): {e}")
+        if attempt < retries - 1:
+            time.sleep(0.3)
+    log(f"Не удалось установить {label} после нескольких попыток")
     return False
+
+def set_local_dimming(monitor, value, retries=3):
+    return _set_with_pair(monitor, VCP_LOCAL_DIMMING_ALT, value, "LD", retries)
+
+def set_halo(monitor, value, retries=3):
+    return _set_with_pair(monitor, VCP_HALO, value, "Halo", retries)
 
 def apply_mode_settings(mode_index):
     mode = modes[mode_index]
@@ -1529,22 +1991,15 @@ def apply_mode_settings(mode_index):
         if not success_brightness:
             log("Не удалось установить яркость после нескольких попыток")
         time.sleep(0.1)
-        for attempt in range(3):
-            try:
-                monitor.vcp.set_vcp_feature(VCP_LOCAL_DIMMING, mode["local_dimming"])
-                try:
-                    monitor.vcp.set_vcp_feature(VCP_LOCAL_DIMMING_ALT, mode["local_dimming"])
-                except:
-                    pass
-                success_dimming = True
-                log(f"LD {mode['local_dimming']} установлен успешно")
-                break
-            except Exception as e:
-                log(f"Ошибка установки LD (попытка {attempt+1}/3): {e}")
-                if attempt < 2:
-                    time.sleep(0.3)
-        if not success_dimming:
-            log("Не удалось установить LD после нескольких попыток")
+        success_dimming = set_local_dimming(monitor, mode["local_dimming"])
+        if success_dimming:
+            log(f"LD {mode['local_dimming']} установлен успешно")
+        if halo_enabled and mode.get("halo") is not None:
+            halo_result = ensure_halo(monitor, mode["halo"])
+            if halo_result == "written":
+                log(f"Halo {mode['halo']} записан в монитор")
+            elif not halo_result:
+                log("Не удалось установить Halo после нескольких попыток")
         return success_dimming, success_brightness
     result = safe_monitor_operation(set_mode)
     if result is None:
@@ -2237,9 +2692,7 @@ def toggle_mode(icon=None):
                 # игровой режим» сбрасываем, чтобы в новой сессии строка
                 # появилась заново.
                 last_media_player_logged = None
-
-                update_tray_title(current_mode_index, None)
-                show_notification(t("notif_mode", mode=mode_name))
+                # Подсказка трея и уведомление о режиме уже выведены в apply_mode_by_index – второй раз не нужны.
 
         log("="*50)
     except Exception as e:
@@ -2251,30 +2704,798 @@ def get_local_dimming_name(value):
             return option["name"]
     return t("dimming_unknown")
 
-def create_settings_window():
-    def create_window():
-        new_hotkey_mod = HOTKEY_MODIFIERS
-        new_hotkey_vk = HOTKEY_VK
-        recording_modifiers = set()
+# ===================== СОВРЕМЕННЫЙ ИНТЕРФЕЙС (стиль Windows 11) =====================
+# Лёгкий набор виджетов на чистом tkinter: карточки со скруглёнными углами, переключатели,
+# ползунки, кнопки. Цвета берутся из светлой/тёмной темы Windows (AppsUseLightTheme).
+UI_FONT = "Segoe UI"
+UI_FONT_SEMIBOLD = "Segoe UI Semibold"
 
+# Акцентный цвет интерфейса совпадает с цветом текста всплывающих уведомлений (show_notification).
+NOTIFY_ACCENT = "#4CAF50"
+
+_UI_PALETTES = {
+    "dark": {"bg": "#202020", "card": "#2B2B2B", "border": "#383838", "divider": "#383838",
+             "text": "#FFFFFF", "muted": "#A0A0A0", "accent": NOTIFY_ACCENT, "on_accent": "#000000",
+             "field": "#333333", "field_border": "#4A4A4A", "hover": "#383838", "pressed": "#2F2F2F",
+             "thumb": "#6B6B6B", "off": "#A0A0A0", "disabled": "#6A6A6A", "warn": "#FFB84D",
+             "accent_hover": "#66BB6A", "button": "#363636", "button_hover": "#404040",
+             "nav_selected": "#323232", "nav_hover": "#292929"},
+    "light": {"bg": "#F3F3F3", "card": "#FFFFFF", "border": "#E3E3E3", "divider": "#EBEBEB",
+              "text": "#1A1A1A", "muted": "#5F5F5F", "accent": NOTIFY_ACCENT, "on_accent": "#000000",
+              "field": "#FFFFFF", "field_border": "#C9C9C9", "hover": "#F0F0F0", "pressed": "#E8E8E8",
+              "thumb": "#BDBDBD", "off": "#5F5F5F", "disabled": "#A8A8A8", "warn": "#9D5D00",
+              "accent_hover": "#43A047", "button": "#FBFBFB", "button_hover": "#F3F3F3",
+              "nav_selected": "#E4E4E4", "nav_hover": "#ECECEC"},
+}
+
+def ui_palette():
+    """(палитра, это_тёмная_тема). Тема из настроек: «dark» (по умолчанию), «light» или «system»
+    (по настройке «Режим приложений по умолчанию» в Windows)."""
+    dark = True
+    if ui_theme == "light":
+        dark = False
+    elif ui_theme == "system":
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+                dark = winreg.QueryValueEx(key, "AppsUseLightTheme")[0] == 0
+        except Exception:
+            pass
+    return _UI_PALETTES["dark" if dark else "light"], dark
+
+def _colorref(hex_color):
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return (b << 16) | (g << 8) | r
+
+def ui_style_window(win, pal, dark):
+    """Фон окна по палитре; тёмный/светлый заголовок и цвет шапки под фон (Windows 10 1809+ / 11)."""
+    win.configure(bg=pal["bg"])
+    try:
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+        dwm = ctypes.windll.dwmapi
+        def set_attr(attr, value):
+            v = ctypes.c_int(value)
+            dwm.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), attr, ctypes.byref(v), ctypes.sizeof(v))
+        set_attr(20, 1 if dark else 0)            # DWMWA_USE_IMMERSIVE_DARK_MODE
+        set_attr(35, _colorref(pal["bg"]))        # DWMWA_CAPTION_COLOR (Windows 11)
+        set_attr(36, _colorref(pal["text"]))      # DWMWA_TEXT_COLOR (Windows 11)
+    except Exception:
+        pass
+
+def ui_setup_ttk(win, pal):
+    """Стили ttk для выпадающих списков и полосы прокрутки (остальное рисуют свои виджеты)."""
+    style = ttk.Style(win)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    style.configure("W11.TCombobox", fieldbackground=pal["field"], background=pal["field"],
+                    foreground=pal["text"], arrowcolor=pal["text"], bordercolor=pal["field_border"],
+                    lightcolor=pal["field"], darkcolor=pal["field"], padding=(8, 5),
+                    selectbackground=pal["field"], selectforeground=pal["text"])
+    style.map("W11.TCombobox",
+              fieldbackground=[("readonly", pal["field"]), ("disabled", pal["card"])],
+              foreground=[("disabled", pal["disabled"])],
+              bordercolor=[("focus", pal["accent"]), ("active", pal["accent"])],
+              selectbackground=[("readonly", pal["field"])],
+              selectforeground=[("readonly", pal["text"])],
+              arrowcolor=[("disabled", pal["disabled"])])
+    win.option_add("*TCombobox*Listbox.background", pal["card"])
+    win.option_add("*TCombobox*Listbox.foreground", pal["text"])
+    win.option_add("*TCombobox*Listbox.selectBackground", pal["accent"])
+    win.option_add("*TCombobox*Listbox.selectForeground", pal["on_accent"])
+    win.option_add("*TCombobox*Listbox.font", (UI_FONT, 10))
+    style.layout("W11.Vertical.TScrollbar",
+                 [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+                     ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+    style.configure("W11.Vertical.TScrollbar", troughcolor=pal["bg"], background=pal["thumb"],
+                    bordercolor=pal["bg"], lightcolor=pal["thumb"], darkcolor=pal["thumb"],
+                    relief="flat", width=8, gripcount=0)
+    style.map("W11.Vertical.TScrollbar", background=[("active", pal["muted"])],
+              lightcolor=[("active", pal["muted"])], darkcolor=[("active", pal["muted"])])
+
+def _round_rect(canvas, x1, y1, x2, y2, r, **kw):
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2, x2 - r, y2,
+           x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return canvas.create_polygon(pts, smooth=True, **kw)
+
+
+# Pillow нужен программе и для значка в трее, поэтому импортируется безусловно. Сглаживание использует
+# rounded_rectangle (Pillow 8.2+): на более старой версии один раз отключаем его и рисуем примитивами canvas.
+from PIL import Image as _PILImage, ImageDraw as _PILDraw
+if not hasattr(_PILDraw.ImageDraw, "rounded_rectangle"):
+    _PILImage = None
+
+_AA_SCALE = 4
+_aa_cache = {}
+
+
+def _aa_image(w, h, bg, shapes, cache=True):
+    """Изображение w×h со сглаживанием: фигуры рисуются в 4-кратном размере и уменьшаются. None – старый Pillow.
+    Фигуры: ("rrect", x1, y1, x2, y2, r, fill, outline), ("circle", cx, cy, r, fill, outline),
+    ("line", x1, y1, x2, y2, width, fill)."""
+    if _PILImage is None or w < 1 or h < 1:
+        return None
+    key = (w, h, bg, tuple(shapes))
+    photo = _aa_cache.get(key)
+    if photo is not None:
+        return photo
+    try:
+        s = _AA_SCALE
+        img = _PILImage.new("RGB", (w * s, h * s), bg)
+        draw = _PILDraw.Draw(img)
+        for sh in shapes:
+            if sh[0] == "rrect":
+                _, x1, y1, x2, y2, r, fill, outline = sh
+                draw.rounded_rectangle([x1 * s, y1 * s, x2 * s - 1, y2 * s - 1], radius=r * s,
+                                       fill=fill or None, outline=outline or None, width=s)
+            elif sh[0] == "circle":
+                _, cx, cy, r, fill, outline = sh
+                draw.ellipse([(cx - r) * s, (cy - r) * s, (cx + r) * s - 1, (cy + r) * s - 1],
+                             fill=fill or None, outline=outline or None, width=s)
+            elif sh[0] == "arc":
+                _, cx, cy, r, a0, a1, width, color = sh
+                draw.arc([(cx - r) * s, (cy - r) * s, (cx + r) * s, (cy + r) * s], start=a0, end=a1,
+                         fill=color, width=int(width * s))
+            elif sh[0] == "poly":
+                _, pts, fill = sh
+                draw.polygon([c * s for c in pts], fill=fill)
+                # Лёгкое скругление углов: обводка той же краской с круглым соединением.
+                draw.line([c * s for c in pts] + [pts[0] * s, pts[1] * s], fill=fill, width=int(1.6 * s), joint="curve")
+            elif sh[0] == "line":
+                _, x1, y1, x2, y2, width, fill = sh
+                draw.line([x1 * s, y1 * s, x2 * s, y2 * s], fill=fill, width=int(width * s))
+                rr = width * s / 2
+                for px, py in ((x1, y1), (x2, y2)):
+                    draw.ellipse([px * s - rr, py * s - rr, px * s + rr, py * s + rr], fill=fill)
+        resample = getattr(_PILImage, "Resampling", _PILImage).LANCZOS
+        img = img.resize((w, h), resample)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        photo = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
+    except Exception:
+        return None
+    if cache and w * h <= 30000:
+        if len(_aa_cache) > 400:
+            _aa_cache.clear()
+        _aa_cache[key] = photo
+    return photo
+
+
+def _track_focus(widget):
+    """Кольцо фокуса рисуется только при переходе с клавиатуры (Tab). После щелчка мышью его нет:
+    иначе обводка оставалась бы на последнем нажатом элементе, пока фокус не уйдёт на другой."""
+    widget._ring = False
+    widget._pointer = False
+
+    def on_press(event):
+        widget._pointer = True
+
+    def on_in(event):
+        widget._ring = not widget._pointer
+        widget._pointer = False
+        widget._draw()
+
+    def on_out(event):
+        widget._ring = False
+        widget._pointer = False
+        widget._draw()
+    # Нажатие ловим на отдельном теге привязок, который идёт первым: собственный обработчик виджета может
+    # вернуть "break", и тогда обычная привязка не сработала бы.
+    tag = f"W11Focus{id(widget)}"
+    widget.bindtags((tag,) + widget.bindtags())
+    widget.bind_class(tag, "<ButtonPress-1>", on_press)
+    widget.bind("<FocusIn>", on_in, add="+")
+    widget.bind("<FocusOut>", on_out, add="+")
+
+
+def _paint(canvas, w, h, bg, shapes, tag=None):
+    """Рисует фигуры на canvas: сглаженным изображением, а без Pillow – примитивами canvas."""
+    kw = {"tags": tag} if tag else {}
+    photo = _aa_image(w, h, bg, shapes, cache=tag is None)
+    if photo is not None:
+        canvas._aa_photo = photo      # ссылка, чтобы изображение не удалил сборщик мусора
+        canvas.create_image(0, 0, anchor="nw", image=photo, **kw)
+        return
+    for sh in shapes:
+        if sh[0] == "rrect":
+            _round_rect(canvas, sh[1], sh[2], sh[3], sh[4], sh[5], fill=sh[6] or "", outline=sh[7] or "", **kw)
+        elif sh[0] == "circle":
+            canvas.create_oval(sh[1] - sh[3], sh[2] - sh[3], sh[1] + sh[3], sh[2] + sh[3],
+                               fill=sh[4] or "", outline=sh[5] or "", **kw)
+        elif sh[0] == "arc":
+            # В Tk углы идут против часовой стрелки, в Pillow – по часовой.
+            canvas.create_arc(sh[1] - sh[3], sh[2] - sh[3], sh[1] + sh[3], sh[2] + sh[3], start=-sh[5],
+                              extent=sh[5] - sh[4], style="arc", width=sh[6], outline=sh[7], **kw)
+        elif sh[0] == "poly":
+            canvas.create_polygon(*sh[1], fill=sh[2], outline=sh[2], **kw)
+        elif sh[0] == "line":
+            canvas.create_line(sh[1], sh[2], sh[3], sh[4], width=sh[5], fill=sh[6], capstyle="round", **kw)
+
+
+class W11Toggle(tk.Canvas):
+    """Переключатель как в Windows 11: включён – заливка акцентом и тёмный кружок справа."""
+    def __init__(self, parent, pal, variable, command=None, bg=None):
+        super().__init__(parent, width=46, height=24, bg=bg or pal["card"], highlightthickness=0,
+                         bd=0, cursor="hand2", takefocus=1)
+        self.pal, self.var, self.command, self.enabled = pal, variable, command, True
+        self._bg = bg or pal["card"]
+        self.bind("<Button-1>", self._click)
+        self.bind("<space>", self._click)
+        _track_focus(self)
+        self._trace = variable.trace_add("write", lambda *a: self._draw())
+        self.bind("<Destroy>", lambda e: self._untrace(), add="+")
+        self._draw()
+
+    def _untrace(self):
+        try:
+            self.var.trace_remove("write", self._trace)
+        except Exception:
+            pass
+
+    def _click(self, event=None):
+        if not self.enabled:
+            return "break"
+        self.focus_set()
+        self.var.set(not self.var.get())
+        if self.command:
+            self.command()
+        return "break"
+
+    def set_enabled(self, enabled):
+        self.enabled = bool(enabled)
+        self.configure(cursor="hand2" if self.enabled else "arrow")
+        self._draw()
+
+    def _draw(self):
+        p = self.pal
+        self.delete("all")
+        on = bool(self.var.get())
+        if on:
+            track = p["accent"] if self.enabled else p["disabled"]
+            shapes = [("rrect", 1, 1, 45, 23, 11, track, None),
+                      ("circle", 34, 12, 7, p["on_accent"] if self.enabled else self._bg, None)]
+        else:
+            line = p["off"] if self.enabled else p["disabled"]
+            shapes = [("rrect", 1, 1, 45, 23, 11, self._bg, line), ("circle", 12, 12, 5, line, None)]
+        if self._ring and self.enabled:
+            shapes.append(("rrect", 0, 0, 46, 24, 12, None, p["text"]))
+        _paint(self, 46, 24, self._bg, shapes)
+
+
+class W11Slider(tk.Canvas):
+    """Ползунок: заполненная часть дорожки – акцентом, на бегунке акцентная точка. Работает и с клавиатурой."""
+    PAD = 11
+
+    def __init__(self, parent, pal, variable, from_=0, to=100, width=210, command=None, bg=None):
+        super().__init__(parent, width=width, height=26, bg=bg or pal["card"], highlightthickness=0,
+                         bd=0, cursor="hand2", takefocus=1)
+        self.pal, self.var, self.lo, self.hi, self.command = pal, variable, from_, to, command
+        self._bg = bg or pal["card"]
+        self.enabled = True
+        self.bind("<Configure>", lambda e: self._draw())
+        self.bind("<Button-1>", self._mouse)
+        self.bind("<B1-Motion>", self._mouse)
+        for key, delta in (("<Left>", -1), ("<Down>", -1), ("<Right>", 1), ("<Up>", 1),
+                           ("<Prior>", 10), ("<Next>", -10)):
+            self.bind(key, lambda e, d=delta: self._nudge(d))
+        _track_focus(self)
+        self._trace = variable.trace_add("write", lambda *a: self._draw())
+        self.bind("<Destroy>", lambda e: self._untrace(), add="+")
+
+    def _untrace(self):
+        try:
+            self.var.trace_remove("write", self._trace)
+        except Exception:
+            pass
+
+    def _value(self):
+        try:
+            return max(self.lo, min(self.hi, int(self.var.get())))
+        except (tk.TclError, ValueError):
+            return self.lo
+
+    def _set(self, value):
+        value = max(self.lo, min(self.hi, int(value)))
+        if value != self._value():
+            self.var.set(value)
+            if self.command:
+                self.command()
+
+    def _mouse(self, event):
+        if not self.enabled:
+            return
+        self.focus_set()
+        span = max(1, (self.winfo_width() or int(self["width"])) - 2 * self.PAD)
+        self._set(round(self.lo + (event.x - self.PAD) / span * (self.hi - self.lo)))
+
+    def _nudge(self, delta):
+        if self.enabled:
+            self._set(self._value() + delta)
+        return "break"
+
+    def set_enabled(self, enabled):
+        self.enabled = bool(enabled)
+        self.configure(cursor="hand2" if self.enabled else "arrow")
+        self._draw()
+
+    def _draw(self):
+        p = self.pal
+        self.delete("all")
+        actual = self.winfo_width()   # до показа окна winfo_width() равен 1 – берём заданную ширину
+        w = max(2 * self.PAD + 2, actual if actual > 1 else int(self["width"]))
+        span = max(1, w - 2 * self.PAD)
+        x = self.PAD + span * (self._value() - self.lo) / (self.hi - self.lo)
+        cy = 13
+        accent = p["accent"] if self.enabled else p["disabled"]
+        ring = p["text"] if (self._ring and self.enabled) else p["field_border"]
+        shapes = [("line", self.PAD, cy, w - self.PAD, cy, 4, p["thumb"] if self.enabled else p["field_border"])]
+        if x > self.PAD:
+            shapes.append(("line", self.PAD, cy, x, cy, 4, accent))
+        shapes += [("circle", x, cy, 9, p["field"], ring), ("circle", x, cy, 5, accent, None)]
+        _paint(self, w, 26, self._bg, shapes)
+
+
+class W11Button(tk.Canvas):
+    """Кнопка со скруглёнными углами. kind: 'accent' (главная) или 'default'."""
+    def __init__(self, parent, pal, text, command, kind="default", bg=None, padx=18, pady=7, min_width=0):
+        self.pal, self.command, self.kind, self._text = pal, command, kind, text
+        self._bg = bg or pal["card"]
+        self.font = tkfont.Font(family=UI_FONT, size=10)
+        self.padx, self.pady, self.min_width = padx, pady, min_width
+        w, h = self._size()
+        super().__init__(parent, width=w, height=h, bg=bg or pal["card"], highlightthickness=0, bd=0,
+                         cursor="hand2", takefocus=1)
+        self._state = "normal"
+        self.enabled = True
+        self.bind("<Enter>", lambda e: self._set_state("hover"))
+        self.bind("<Leave>", lambda e: self._set_state("normal"))
+        self.bind("<ButtonPress-1>", lambda e: (self.focus_set(), self._set_state("pressed")))
+        self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Return>", lambda e: self._invoke())
+        self.bind("<space>", lambda e: self._invoke())
+        _track_focus(self)
+        self._draw()
+
+    def _size(self):
+        return (max(self.min_width, self.font.measure(self._text) + 2 * self.padx),
+                self.font.metrics("linespace") + 2 * self.pady)
+
+    def set_text(self, text):
+        self._text = text
+        w, h = self._size()
+        self.configure(width=w, height=h)
+        self._draw()
+
+    def set_enabled(self, enabled):
+        self.enabled = bool(enabled)
+        self.configure(cursor="hand2" if self.enabled else "arrow")
+        self._draw()
+
+    def _set_state(self, state):
+        if self._state != state:
+            self._state = state
+            self._draw()
+
+    def _release(self, event):
+        inside = 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height()
+        self._set_state("hover" if inside else "normal")
+        if inside:
+            self._invoke()
+
+    def _invoke(self):
+        if self.enabled and self.command:
+            self.command()
+
+    def _draw(self):
+        p = self.pal
+        self.delete("all")
+        w, h = int(self["width"]), int(self["height"])
+        if self.kind == "accent":
+            fill = {"normal": p["accent"], "hover": p["accent_hover"], "pressed": p["accent"]}[self._state]
+            outline, fg = fill, p["on_accent"]
+        else:
+            fill = {"normal": p["button"], "hover": p["button_hover"], "pressed": p["pressed"]}[self._state]
+            outline, fg = p["field_border"], p["text"]
+        if not self.enabled:
+            fill, outline, fg = p["card"], p["field_border"], p["disabled"]
+        elif self._ring:
+            outline = p["text"]
+        _paint(self, w, h, self._bg, [("rrect", 0, 0, w, h, 6, fill, outline)])
+        self.create_text(w / 2, h / 2, text=self._text, fill=fg, font=self.font)
+
+
+class W11NavItem(tk.Canvas):
+    """Пункт бокового меню: выбранный отмечен плашкой и акцентной полоской слева, как в Параметрах Windows 11."""
+    def __init__(self, parent, pal, text, command, bg=None):
+        super().__init__(parent, height=40, bg=bg or pal["bg"], highlightthickness=0, bd=0,
+                         cursor="hand2", takefocus=1)
+        self.pal, self.command, self._text = pal, command, text
+        self._bg = bg or pal["bg"]
+        self.font = tkfont.Font(family=UI_FONT, size=11)
+        self.selected = False
+        self.hover = False
+        self.bind("<Configure>", lambda e: self._draw())
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<Button-1>", lambda e: (self.focus_set(), self.command()))
+        self.bind("<Return>", lambda e: self.command())
+        self.bind("<space>", lambda e: self.command())
+        _track_focus(self)
+
+    def _set_hover(self, value):
+        self.hover = value
+        self._draw()
+
+    def set_selected(self, value):
+        self.selected = bool(value)
+        self._draw()
+
+    def _draw(self):
+        p = self.pal
+        self.delete("all")
+        actual = self.winfo_width()
+        w = max(20, actual if actual > 1 else 200)
+        shapes = []
+        if self.selected or self.hover:
+            shapes.append(("rrect", 4, 3, w - 4, 37, 6, p["nav_selected"] if self.selected else p["nav_hover"], None))
+        if self.selected:
+            shapes.append(("line", 8, 12, 8, 28, 3, p["accent"]))
+        if self._ring:
+            shapes.append(("rrect", 4, 3, w - 4, 37, 6, None, p["muted"]))
+        _paint(self, w, 40, self._bg, shapes)
+        self.create_text(24, 20, text=self._text, anchor="w", font=self.font, fill=p["text"])
+
+
+class W11Icon(tk.Canvas):
+    """Маленький значок 28×28: 'refresh' (проверка обновлений) или 'warn' (треугольник с восклицательным знаком).
+    С command ведёт себя как кнопка с подсветкой при наведении."""
+    SIZE = 28
+    _ring = False
+
+    def __init__(self, parent, pal, icon, command=None, bg=None):
+        super().__init__(parent, width=self.SIZE, height=self.SIZE, bg=bg or pal["bg"], highlightthickness=0,
+                         bd=0, cursor="hand2" if command else "arrow", takefocus=1 if command else 0)
+        self.pal, self.icon, self.command, self._bg = pal, icon, command, bg or pal["bg"]
+        self.hover = False
+        self.busy = False
+        if command:
+            self.bind("<Enter>", lambda e: self._set_hover(True))
+            self.bind("<Leave>", lambda e: self._set_hover(False))
+            self.bind("<Button-1>", lambda e: self._invoke())
+            self.bind("<Return>", lambda e: self._invoke())
+            self.bind("<space>", lambda e: self._invoke())
+            _track_focus(self)
+        self._draw()
+
+    def _set_hover(self, value):
+        self.hover = value
+        self._draw()
+
+    def set_busy(self, busy):
+        self.busy = bool(busy)
+        self._draw()
+
+    def _invoke(self):
+        if self.command and not self.busy:
+            self.command()
+
+    def _draw(self):
+        p = self.pal
+        self.delete("all")
+        shapes = []
+        if self.command and (self.hover or self._ring) and not self.busy:
+            shapes.append(("rrect", 0, 0, self.SIZE, self.SIZE, 6, p["nav_hover"], None))
+        if self.icon == "refresh":
+            color = p["disabled"] if self.busy else (p["text"] if self.hover else p["muted"])
+            cx = cy = 14
+            r, a1 = 6.5, 320
+            shapes.append(("arc", cx, cy, r, 30, a1, 2, color))
+            t_ = math.radians(a1)
+            px, py = cx + r * math.cos(t_), cy + r * math.sin(t_)       # конец дуги
+            tx, ty = -math.sin(t_), math.cos(t_)                         # касательная (по часовой)
+            nx, ny = math.cos(t_), math.sin(t_)                          # радиус наружу
+            tip = (px + tx * 4.2, py + ty * 4.2)
+            b1 = (px - tx * 0.6 + nx * 3.6, py - ty * 0.6 + ny * 3.6)
+            b2 = (px - tx * 0.6 - nx * 3.6, py - ty * 0.6 - ny * 3.6)
+            shapes.append(("poly", (tip[0], tip[1], b1[0], b1[1], b2[0], b2[1]), color))
+        else:   # warn: треугольник и восклицательный знак рисуем фигурами (шрифтовой «!» выходил за основание)
+            shapes.append(("poly", (14, 4.5, 24.5, 22.5, 3.5, 22.5), p["warn"]))
+            shapes.append(("line", 14, 10.6, 14, 15.6, 2.2, "#000000"))
+            shapes.append(("circle", 14, 18.9, 1.35, "#000000", None))
+        _paint(self, self.SIZE, self.SIZE, self._bg, shapes)
+
+
+class W11Row:
+    """Строка внутри карточки: слева заголовок и пояснение, справа элемент управления (self.right)."""
+    def __init__(self, wrap, left, right, title_label, desc_label):
+        self.wrap, self.left, self.right = wrap, left, right
+        self.title_label, self.desc_label = title_label, desc_label
+
+    def show(self):
+        self.wrap.grid()
+
+    def hide(self):
+        self.wrap.grid_remove()
+
+    def set_visible(self, visible):
+        self.show() if visible else self.hide()
+
+    def set_dim(self, dim, pal):
+        """Приглушает заголовок строки (когда её элемент отключён)."""
+        if self.title_label is not None:
+            self.title_label.configure(fg=pal["disabled"] if dim else pal["text"])
+
+
+class W11Card(tk.Canvas):
+    """Карточка со скруглёнными углами и рамкой. Строки добавляются через add_row()."""
+    INSET = 3
+
+    def __init__(self, parent, pal):
+        super().__init__(parent, bg=pal["bg"], highlightthickness=0, bd=0, height=10)
+        self.pal = pal
+        self.body = tk.Frame(self, bg=pal["card"])
+        self.body.columnconfigure(0, weight=1)
+        self._win = self.create_window(self.INSET, self.INSET, window=self.body, anchor="nw")
+        self._rows = 0
+        self.bind("<Configure>", self._on_canvas)
+        self.body.bind("<Configure>", self._on_body)
+
+    def _on_canvas(self, event):
+        self.itemconfigure(self._win, width=max(1, event.width - 2 * self.INSET))
+        self._redraw()
+
+    def _on_body(self, event):
+        self.configure(height=event.height + 2 * self.INSET)
+
+    def _redraw(self):
+        self.delete("bg")
+        w, h = self.winfo_width(), self.winfo_height()
+        if w > 4 and h > 4:
+            _paint(self, w, h, self.pal["bg"], [("rrect", 0, 0, w, h, 8, self.pal["card"], self.pal["border"])], tag="bg")
+            self.tag_lower("bg")
+
+    def add_row(self, title=None, desc=None, desc_color=None):
+        p = self.pal
+        n, self._rows = self._rows, self._rows + 1
+        wrap = tk.Frame(self.body, bg=p["card"])
+        wrap.grid(row=n, column=0, sticky="ew")
+        if n > 0:
+            tk.Frame(wrap, height=1, bg=p["divider"]).pack(fill="x")
+        inner = tk.Frame(wrap, bg=p["card"])
+        inner.pack(fill="x", padx=16, pady=9)
+        right = tk.Frame(inner, bg=p["card"])
+        right.pack(side="right", padx=(16, 0))
+        left = tk.Frame(inner, bg=p["card"])
+        left.pack(side="left", fill="x", expand=True)
+        title_label = desc_label = None
+        if title:
+            title_label = tk.Label(left, text=title, bg=p["card"], fg=p["text"], font=(UI_FONT, 10),
+                                   anchor="w", justify="left", wraplength=300)
+            title_label.pack(anchor="w")
+        if desc:
+            desc_label = tk.Label(left, text=desc, bg=p["card"], fg=desc_color or p["muted"],
+                                  font=(UI_FONT, 9), anchor="w", justify="left", wraplength=300)
+            desc_label.pack(anchor="w", pady=(2, 0))
+        if title_label or desc_label:
+            labels = [lbl for lbl in (title_label, desc_label) if lbl is not None]
+            left.bind("<Configure>", lambda e, ls=labels: [l.configure(wraplength=max(120, e.width - 4)) for l in ls])
+        return W11Row(wrap, left, right, title_label, desc_label)
+
+
+class W11Page(tk.Frame):
+    """Колонка страницы: заголовки разделов и карточки (через grid, чтобы блоки можно было скрывать и показывать)."""
+    def __init__(self, parent, pal):
+        super().__init__(parent, bg=pal["bg"])
+        self.pal = pal
+        self.columnconfigure(0, weight=1)
+        self._n = 0
+
+    def _place(self, widget, pady):
+        widget.grid(row=self._n, column=0, sticky="ew", pady=pady)
+        self._n += 1
+        return widget
+
+    def title(self, text):
+        return self._place(tk.Label(self, text=text, bg=self.pal["bg"], fg=self.pal["text"],
+                                    font=(UI_FONT_SEMIBOLD, 20), anchor="w"), (0, 12))
+
+    def section(self, text):
+        return self._place(tk.Label(self, text=text, bg=self.pal["bg"], fg=self.pal["text"],
+                                    font=(UI_FONT_SEMIBOLD, 11), anchor="w"), (14, 6))
+
+    def card(self):
+        return self._place(W11Card(self, self.pal), (0, 0))
+
+    def gap(self, px=16):
+        return self._place(tk.Frame(self, height=px, bg=self.pal["bg"]), 0)
+
+
+def ui_entry(parent, pal, textvariable=None, width=8, justify="left"):
+    return tk.Entry(parent, textvariable=textvariable, width=width, justify=justify, bg=pal["field"],
+                    fg=pal["text"], insertbackground=pal["text"], relief="flat", bd=0,
+                    highlightthickness=1, highlightbackground=pal["field_border"],
+                    highlightcolor=pal["accent"], disabledbackground=pal["card"],
+                    disabledforeground=pal["disabled"], selectbackground=pal["accent"],
+                    selectforeground=pal["on_accent"], font=(UI_FONT, 10))
+
+def ui_combo(parent, values, variable, width=22):
+    combo = ttk.Combobox(parent, style="W11.TCombobox", textvariable=variable, values=values,
+                         state="readonly", width=width, font=(UI_FONT, 10))
+
+    def release_focus(event):
+        # После выбора значения фокус возвращается окну: рамка фокуса и подсветка текста не остаются на списке.
+        event.widget.selection_clear()
+        event.widget.winfo_toplevel().focus_set()
+    combo.bind("<<ComboboxSelected>>", release_focus, add="+")
+    return combo
+
+def ui_label(parent, pal, text, muted=False, bold=False, size=10, bg=None, **kw):
+    return tk.Label(parent, text=text, bg=bg or pal["card"], fg=pal["muted"] if muted else pal["text"],
+                    font=(UI_FONT_SEMIBOLD if bold else UI_FONT, size), **kw)
+
+def ui_toggle(parent, pal, variable, command=None, bg=None):
+    """Переключатель с подписью «Вкл/Выкл» справа, как в Параметрах Windows 11."""
+    frame = tk.Frame(parent, bg=bg or pal["card"])
+    state_var = tk.StringVar()
+
+    def refresh(*_):
+        state_var.set(t("toggle_on") if variable.get() else t("toggle_off"))
+    label = tk.Label(frame, textvariable=state_var, bg=bg or pal["card"], fg=pal["text"],
+                     font=(UI_FONT, 10), width=5, anchor="w")
+    toggle = W11Toggle(frame, pal, variable, command=command, bg=bg)
+    label.pack(side="right", padx=(8, 0))
+    toggle.pack(side="right")
+    trace = variable.trace_add("write", refresh)
+    frame.bind("<Destroy>", lambda e: _safe_untrace(variable, trace), add="+")
+    refresh()
+    frame.toggle, frame.state_label = toggle, label
+    return frame
+
+def _safe_untrace(variable, trace):
+    try:
+        variable.trace_remove("write", trace)
+    except Exception:
+        pass
+
+def ui_bind_wheel(widget, canvas):
+    """Прокрутка страницы колесом мыши над любым вложенным виджетом."""
+    def on_wheel(event):
+        canvas.yview_scroll(int(-event.delta / 120) or (-1 if event.delta > 0 else 1), "units")
+        return "break"
+    widget.bind("<MouseWheel>", on_wheel, add="+")
+    for child in widget.winfo_children():
+        ui_bind_wheel(child, canvas)
+
+def ui_scrolled_page(window, pal, page_factory, footer_height=0):
+    """Прокручиваемая страница. Возвращает (page, canvas, update_scroll)."""
+    holder = tk.Frame(window, bg=pal["bg"])
+    holder.pack(side="top", fill="both", expand=True)
+    canvas = tk.Canvas(holder, bg=pal["bg"], highlightthickness=0, bd=0)
+    scrollbar = ttk.Scrollbar(holder, orient="vertical", style="W11.Vertical.TScrollbar", command=canvas.yview)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    outer = tk.Frame(canvas, bg=pal["bg"])
+    outer.columnconfigure(0, weight=1)
+    win_id = canvas.create_window(0, 0, window=outer, anchor="nw")
+    page = page_factory(outer)
+    page.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 20))
+    state = {"scroll": None}
+
+    def update_scroll(event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+        need = outer.winfo_reqheight() > canvas.winfo_height() > 1
+        if need != state["scroll"]:
+            state["scroll"] = need
+            if need:
+                scrollbar.pack(side="right", fill="y")
+            else:
+                scrollbar.pack_forget()
+                canvas.yview_moveto(0)
+    canvas.pack(side="left", fill="both", expand=True)
+    outer.bind("<Configure>", update_scroll)
+    canvas.bind("<Configure>", lambda e: (canvas.itemconfigure(win_id, width=e.width), update_scroll()))
+    return page, canvas, update_scroll, holder
+
+
+_settings_ui = {"window": None, "show_page": None}
+
+
+def parse_int_field(text):
+    """Целое число из поля ввода; вместо сырого «invalid literal for int()» – понятное сообщение."""
+    try:
+        return int(str(text).strip())
+    except ValueError:
+        raise ValueError(t("err_not_a_number")) from None
+
+
+def reset_settings_to_defaults():
+    """Возвращает все настройки программы к значениям по умолчанию, сохраняет и применяет их."""
+    global icon_color_enabled, notification_style, auto_switch_enabled, media_players_enabled
+    global media_delay_seconds, custom_exclusions_enabled, halo_enabled, halo_verified_value, ui_theme
+    global advanced_settings_enabled, debug_enabled, HOTKEY_MODIFIERS, HOTKEY_VK, monitor_device_path
+    global current_language, auto_update_check, last_update_check, update_info
+    prev_auto_switch = auto_switch_enabled
+    prev_hotkey = (HOTKEY_MODIFIERS, HOTKEY_VK)
+    current_language = detect_system_language()
+    modes[:] = get_default_modes()
+    hdr_settings.clear()
+    hdr_settings.update({"auto_set_preset": False, "preset_number": 5})
+    icon_colors[:] = DEFAULT_ICON_COLORS
+    icon_color_enabled = False
+    notification_style = "win10"
+    auto_switch_enabled = True
+    media_players_enabled = True
+    media_delay_seconds = 2
+    custom_excluded_processes.clear()
+    custom_exclusions_enabled = False
+    halo_enabled = False
+    halo_verified_value = None
+    auto_update_check = False
+    last_update_check = 0.0
+    update_info = None
+    ui_theme = "dark"
+    advanced_settings_enabled = False
+    debug_enabled = False
+    HOTKEY_MODIFIERS, HOTKEY_VK = DEFAULT_HOTKEY_MOD, DEFAULT_HOTKEY_VK
+    monitor_device_path = None
+    window_positions.clear()
+    try:
+        set_autostart(False)
+    except Exception as e:
+        log(f"Сброс: не удалось отключить автозапуск: {e}")
+    save_settings()
+    if (HOTKEY_MODIFIERS, HOTKEY_VK) != prev_hotkey:
+        request_hotkey_update(HOTKEY_MODIFIERS, HOTKEY_VK)
+    update_tray_icon(current_mode_index)
+    rebuild_tray_menu()
+    if auto_switch_enabled != prev_auto_switch:
+        threading.Thread(target=on_auto_switch_changed, args=(auto_switch_enabled,), daemon=True).start()
+
+    def reapply_current_mode():
+        with game_state_lock:
+            blocked, _ = is_hdr_blocked(force_refresh=True)
+            if not blocked:
+                apply_mode_settings(current_mode_index)
+    threading.Thread(target=reapply_current_mode, daemon=True).start()
+    show_notification(t("notif_settings_reset"))
+
+
+def create_settings_window(start_page="general"):
+    def create_window():
+        # Окно настроек одно: повторный вызов (например, «О программе» из трея) показывает уже открытое.
+        previous = _settings_ui.get("window")
+        try:
+            if previous is not None and previous.winfo_exists():
+                previous.deiconify()
+                previous.lift()
+                previous.focus_force()
+                _settings_ui["show_page"](start_page)
+                return
+        except tk.TclError:
+            pass
+        pal, dark = ui_palette()
+
+        # ---------- действия ----------
         def save_all_settings():
-            nonlocal auto_switch_var, media_players_var, media_delay_var
             nonlocal new_hotkey_mod, new_hotkey_vk
             try:
-                standard_brightness = int(standard_brightness_entry.get())
-                if not (0 <= standard_brightness <= 100):
-                    raise ValueError(t("err_brightness_range"))
+                standard_brightness = int(standard_brightness_var.get())
+                gaming_brightness = int(gaming_brightness_var.get())
+                for value in (standard_brightness, gaming_brightness):
+                    if not (0 <= value <= 100):
+                        raise ValueError(t("err_brightness_range"))
                 standard_dimming = standard_dimming_var.get()
-                if standard_dimming == 0:
-                    raise ValueError(t("err_select_dimming"))
-                gaming_brightness = int(gaming_brightness_entry.get())
-                if not (0 <= gaming_brightness <= 100):
-                    raise ValueError(t("err_brightness_range"))
                 gaming_dimming = gaming_dimming_var.get()
-                if gaming_dimming == 0:
+                if standard_dimming == 0 or gaming_dimming == 0:
                     raise ValueError(t("err_select_dimming"))
+                standard_halo = int(standard_halo_var.get())
+                gaming_halo = int(gaming_halo_var.get())
+                for value in (standard_halo, gaming_halo):
+                    if not (0 <= value <= 100):
+                        raise ValueError(t("err_halo_range"))
                 auto_set_preset = auto_set_var.get()
-                preset_number = int(preset_entry.get())
+                preset_number = parse_int_field(preset_entry.get())
                 if not (0 <= preset_number <= 255):
                     raise ValueError(t("err_preset_range"))
                 icon_color_on = icon_color_var.get()
@@ -2285,7 +3506,7 @@ def create_settings_window():
                     if not standard_icon_color or not gaming_icon_color:
                         raise ValueError(t("err_icon_color"))
                 try:
-                    delay_val = int(media_delay_var.get())
+                    delay_val = parse_int_field(media_delay_var.get())
                     if delay_val < 1:
                         raise ValueError(t("err_delay_min"))
                     if delay_val > 60:
@@ -2302,10 +3523,14 @@ def create_settings_window():
                 if auto_switch_enabled != prev_auto_switch:
                     threading.Thread(target=on_auto_switch_changed, args=(auto_switch_enabled,), daemon=True).start()
 
-                # Вычисляем, какие процессы были добавлены в этом сохранении,
-                # ДО перезаписи custom_excluded_processes.
-                existing_exclusions = set(custom_excluded_processes)
-                newly_added_exclusions = [p for p in custom_excluded_local if p not in existing_exclusions]
+                # Какие процессы добавлены в этом сохранении – считаем ДО перезаписи списка.
+                # Пока «свои исключения» выключены, ни один из процессов не считается новым.
+                global custom_exclusions_enabled
+                was_enabled = custom_exclusions_enabled
+                custom_exclusions_enabled = custom_excl_var.get()
+                existing_exclusions = set(custom_excluded_processes) if was_enabled else set()
+                newly_added_exclusions = ([p for p in custom_excluded_local if p not in existing_exclusions]
+                                          if custom_exclusions_enabled else [])
                 custom_excluded_processes[:] = custom_excluded_local
 
                 global advanced_settings_enabled, debug_enabled
@@ -2316,6 +3541,18 @@ def create_settings_window():
                 modes[0]["local_dimming"] = standard_dimming
                 modes[1]["brightness"] = gaming_brightness
                 modes[1]["local_dimming"] = gaming_dimming
+                # Halo Control: один общий переключатель для обоих режимов, значения хранятся в каждом режиме.
+                global halo_enabled, halo_verified_value, ui_theme, auto_update_check
+                halo_changed = ((halo_enabled, modes[0].get("halo"), modes[1].get("halo"))
+                                != (halo_on_var.get(), standard_halo, gaming_halo))
+                halo_enabled = halo_on_var.get()
+                # Автопроверку только что включили (было выключено) – проверяем сразу, дальше по расписанию.
+                update_check_now = auto_update_var.get() and not auto_update_check
+                auto_update_check = auto_update_var.get()
+                if halo_changed:
+                    halo_verified_value = None   # Halo изменили в настройках – сверяем/записываем заново
+                modes[0]["halo"] = standard_halo
+                modes[1]["halo"] = gaming_halo
                 hdr_settings["auto_set_preset"] = auto_set_preset
                 hdr_settings["preset_number"] = preset_number
                 global icon_color_enabled, notification_style
@@ -2325,6 +3562,7 @@ def create_settings_window():
                     icon_colors[1] = gaming_icon_color
                 update_tray_icon(current_mode_index)
                 notification_style = notification_code_by_name.get(notification_var.get(), notification_style)
+                ui_theme = theme_code_by_name.get(theme_var.get(), ui_theme)
 
                 global HOTKEY_MODIFIERS, HOTKEY_VK
                 hotkey_changed = (new_hotkey_mod != HOTKEY_MODIFIERS) or (new_hotkey_vk != HOTKEY_VK)
@@ -2338,7 +3576,13 @@ def create_settings_window():
                 if language_changed:
                     current_language = selected_lang_code
 
-                autostart_ok, autostart_error = set_autostart(autostart_var.get())
+                # Ярлык автозапуска трогаем, только если состояние переключателя изменилось: при уже включённом
+                # автозапуске его не пересоздаём.
+                desired_autostart = autostart_var.get()
+                if desired_autostart == is_autostart_enabled():
+                    autostart_ok, autostart_error = True, ""
+                else:
+                    autostart_ok, autostart_error = set_autostart(desired_autostart)
 
                 if save_settings():
                     if autostart_ok:
@@ -2349,11 +3593,10 @@ def create_settings_window():
                     # Значения в памяти уже новые и действуют до перезапуска – молча терять их при
                     # следующем запуске нельзя, поэтому сообщаем причину.
                     show_notification(t("notif_save_failed", error=last_save_error), error=True)
-                # Переприменение настроек к текущему режиму — в отдельном
-                # потоке под game_state_lock. Так не блокируем UI на время
-                # DDC-операций и не гоняем с monitor_loop, который мог бы
-                # сменить current_mode_index прямо во время записи. Применяем и при
-                # ошибке записи файла: значения в памяти от неё не зависят.
+                # Переприменение настроек к текущему режиму – в отдельном потоке под game_state_lock.
+                # Так не блокируем UI на время DDC-операций и не гоняем с monitor_loop, который мог бы
+                # сменить current_mode_index прямо во время записи. Применяем и при ошибке записи файла:
+                # значения в памяти от неё не зависят.
                 def reapply_current_mode():
                     with game_state_lock:
                         blocked, _ = is_hdr_blocked(force_refresh=True)
@@ -2361,12 +3604,15 @@ def create_settings_window():
                             apply_mode_settings(current_mode_index)
                 threading.Thread(target=reapply_current_mode, daemon=True).start()
 
+                if update_check_now:
+                    threading.Thread(target=check_update_and_notify, daemon=True).start()
+
                 if language_changed:
                     rebuild_tray_menu()
                     show_notification(t("notif_restart_required"))
 
-                # Если в исключения добавили процесс, который прямо сейчас
-                # автоматически держит игровой режим – вернуть стандартный.
+                # Если в исключения добавили процесс, который прямо сейчас автоматически держит
+                # игровой режим – вернуть стандартный.
                 if newly_added_exclusions:
                     check_active_game_exclusion(newly_added_exclusions)
 
@@ -2375,9 +3621,8 @@ def create_settings_window():
                         hwnd = user32.GetForegroundWindow()
                         if not hwnd:
                             return
-                        # is_game_window модифицирует глобальные
-                        # last_excluded_process_logged / last_media_player_logged —
-                        # держим game_state_lock, чтобы не гонять с monitor_loop.
+                        # is_game_window модифицирует глобальные last_excluded_process_logged /
+                        # last_media_player_logged – держим game_state_lock, чтобы не гонять с monitor_loop.
                         with game_state_lock:
                             if is_game_window(hwnd):
                                 log("Авто-переключение включено – игра/медиаплеер активна, переключаем")
@@ -2395,124 +3640,254 @@ def create_settings_window():
             remember_window_position("settings", window)
             window.destroy()
 
-        def on_standard_dimming_select():
-            selected_value = standard_dimming_var.get()
-            for option in get_local_dimming_options():
-                if option["value"] == selected_value:
-                    standard_desc_label.config(text=option["description"])
-                    break
-
-        def on_gaming_dimming_select():
-            selected_value = gaming_dimming_var.get()
-            for option in get_local_dimming_options():
-                if option["value"] == selected_value:
-                    gaming_desc_label.config(text=option["description"])
-                    break
-
-        def toggle_media_players_state(*args):
-            if auto_switch_var.get():
-                media_players_check.config(state="normal")
-                if media_players_var.get():
-                    media_delay_entry.config(state="normal")
-                else:
-                    media_delay_entry.config(state="disabled")
-            else:
-                media_players_check.config(state="disabled")
-                media_delay_entry.config(state="disabled")
-
-        def toggle_media_delay_state(*args):
-            if auto_switch_var.get() and media_players_var.get():
-                media_delay_entry.config(state="normal")
-            else:
-                media_delay_entry.config(state="disabled")
-
+        # ---------- окно ----------
         window = tk.Toplevel()
+        window.withdraw()   # показываем окно, только когда оно собрано и стоит на своём месте (без «прыжка» из угла)
         apply_window_icon(window)
         window.title(t("settings_title"))
-        win_width = 600
-        window.update_idletasks()
-        win_height = min(920, window.winfo_screenheight() - 80)
         window.resizable(False, False)
+        ui_style_window(window, pal, dark)
+        ui_setup_ttk(window, pal)
+        win_width = 920
+        win_height = min(720, window.winfo_screenheight() - 100)
         start_pos = get_window_start_position("settings", win_width, win_height)
         if start_pos is None:
             start_pos = ((window.winfo_screenwidth() - win_width) // 2,
                          (window.winfo_screenheight() - win_height) // 2)
         window.geometry(f"{win_width}x{win_height}+{start_pos[0]}+{start_pos[1]}")
 
-        canvas = tk.Canvas(window)
-        scrollbar = ttk.Scrollbar(window, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        # Содержимое растягиваем на всю ширину окна – иначе блоки с fill=X остаются узкими
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # Нижняя панель с кнопками создаётся первой, чтобы всегда оставаться на виду.
+        footer = tk.Frame(window, bg=pal["bg"])
+        footer.pack(side="bottom", fill="x")
+        tk.Frame(footer, height=1, bg=pal["divider"]).pack(fill="x")
+        buttons = tk.Frame(footer, bg=pal["bg"])
+        buttons.pack(fill="x", padx=24, pady=12)
+        W11Button(buttons, pal, t("btn_cancel"), on_cancel, bg=pal["bg"], min_width=110).pack(side="right")
+        W11Button(buttons, pal, t("btn_save"), save_all_settings, kind="accent", bg=pal["bg"],
+                  min_width=110).pack(side="right", padx=(0, 8))
 
-        main_frame = ttk.Frame(scrollable_frame, padding="15")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Слева внизу: версия программы, значок проверки обновлений и результат проверки.
+        version_box = tk.Frame(buttons, bg=pal["bg"])
+        version_box.pack(side="left")
+        tk.Label(version_box, text=t("settings_version", version=APP_VERSION), bg=pal["bg"], fg=pal["muted"],
+                 font=(UI_FONT, 10)).pack(side="left")
+        update_icon = W11Icon(version_box, pal, "refresh", command=lambda: start_update_check())
+        update_icon.pack(side="left", padx=(8, 0))
+        update_status = tk.Frame(version_box, bg=pal["bg"])
+        update_status.pack(side="left", padx=(6, 0))
 
+        def open_update_page(url):
+            ok_url = isinstance(url, str) and url.startswith("https://github.com/")
+            webbrowser.open(url if ok_url else f"https://github.com/{GITHUB_REPO}/releases")
+
+        def render_update_status(state, url=None):
+            for child in update_status.winfo_children():
+                child.destroy()
+            if state == "available":
+                W11Icon(update_status, pal, "warn").pack(side="left")
+                link = tk.Label(update_status, text=t("update_available"), bg=pal["bg"], fg=pal["warn"],
+                                cursor="hand2", font=(UI_FONT, 10, "underline"))
+                link.pack(side="left", padx=(4, 0))
+                link.bind("<Button-1>", lambda e: open_update_page(url))
+            elif state:
+                text = {"checking": t("update_checking"), "latest": t("update_latest"),
+                        "error": t("update_error")}[state]
+                tk.Label(update_status, text=text, bg=pal["bg"], fg=pal["muted"],
+                         font=(UI_FONT, 10)).pack(side="left")
+
+        def finish_update_check(result):
+            try:
+                if not window.winfo_exists():
+                    return
+                update_icon.set_busy(False)
+                if result[0] == "available":
+                    render_update_status("available", result[2])
+                else:
+                    render_update_status("latest" if result[0] == "latest" else "error")
+            except tk.TclError:
+                pass
+
+        def start_update_check():
+            update_icon.set_busy(True)
+            render_update_status("checking")
+
+            def worker():
+                result = check_for_update()
+                tk_queue.put(("window", lambda: finish_update_check(result)))
+            threading.Thread(target=worker, daemon=True).start()
+
+        if update_info:   # новая версия уже найдена раньше (в том числе автоматической проверкой)
+            render_update_status("available", update_info.get("url"))
+
+        # Слева – меню категорий, справа – страница выбранной категории (каждая помещается без прокрутки).
+        shell = tk.Frame(window, bg=pal["bg"])
+        shell.pack(fill="both", expand=True)
+        nav = tk.Frame(shell, bg=pal["bg"], width=230)
+        nav.pack(side="left", fill="y", padx=(10, 0))
+        nav.pack_propagate(False)
+        tk.Label(nav, text=t("settings_title"), bg=pal["bg"], fg=pal["text"], font=(UI_FONT_SEMIBOLD, 15),
+                 anchor="w").pack(fill="x", padx=14, pady=(20, 14))
+        content = tk.Frame(shell, bg=pal["bg"])
+        content.pack(side="left", fill="both", expand=True)
+
+        pages, holders, nav_items, scrollers = {}, {}, {}, []
+
+        def make_page(key, nav_text):
+            page_, canvas_, update_, holder_ = ui_scrolled_page(content, pal, lambda parent: W11Page(parent, pal))
+            holder_.pack_forget()
+            page_.title(nav_text)
+            pages[key], holders[key] = page_, holder_
+            scrollers.append(update_)
+            item = W11NavItem(nav, pal, nav_text, lambda k=key: show_page(k))
+            item.pack(fill="x", padx=6, pady=1)
+            nav_items[key] = item
+            return page_, canvas_
+
+        def update_scroll():
+            for fn in scrollers:
+                fn()
+
+        def show_page(key):
+            for k, holder in holders.items():
+                holder.pack_forget()
+                nav_items[k].set_selected(k == key)
+            holders[key].pack(fill="both", expand=True)
+            window.update_idletasks()
+            update_scroll()
+
+        page, _canvas1 = make_page("general", t("settings_nav_general"))
+        pages_canvases = [_canvas1]
+        for key, caption in (("auto", t("settings_nav_auto")), ("modes", t("settings_nav_modes")),
+                             ("advanced", t("settings_nav_advanced")), ("about", t("settings_nav_about"))):
+            pages_canvases.append(make_page(key, caption)[1])
+
+        # ---------- Общие ----------
+        page = pages["general"]
+        card = page.card()
+
+        row = card.add_row(t("settings_autostart"))
         autostart_var = tk.BooleanVar(value=is_autostart_enabled())
-        ttk.Checkbutton(
-            main_frame,
-            text=t("settings_autostart"),
-            variable=autostart_var
-        ).pack(anchor=tk.W, pady=(0, 10))
+        ui_toggle(row.right, pal, autostart_var).pack()
 
-        auto_switch_var = tk.BooleanVar(value=auto_switch_enabled)
-        auto_switch_check = ttk.Checkbutton(
-            main_frame,
-            text=t("settings_auto_switch"),
-            variable=auto_switch_var,
-            command=toggle_media_players_state
-        )
-        auto_switch_check.pack(anchor=tk.W, pady=(0, 5))
+        row = card.add_row(t("settings_language_group"))
+        language_names = [TRANSLATIONS[code]["lang_name"] for code in SUPPORTED_LANGUAGES]
+        language_code_by_name = {TRANSLATIONS[code]["lang_name"]: code for code in SUPPORTED_LANGUAGES}
+        language_var = tk.StringVar(value=TRANSLATIONS[current_language]["lang_name"])
+        ui_combo(row.right, language_names, language_var, width=20).pack()
 
-        media_players_var = tk.BooleanVar(value=media_players_enabled)
-        media_players_check = ttk.Checkbutton(
-            main_frame,
-            text=t("settings_media_players"),
-            variable=media_players_var,
-            command=toggle_media_delay_state
-        )
-        media_players_check.pack(anchor=tk.W, pady=(0, 5))
+        row = card.add_row(t("settings_theme_title"), desc=t("settings_theme_desc"))
+        theme_names = {"dark": t("theme_dark"), "light": t("theme_light"), "system": t("theme_system")}
+        theme_code_by_name = {name: code for code, name in theme_names.items()}
+        theme_var = tk.StringVar(value=theme_names.get(ui_theme, theme_names["dark"]))
+        ui_combo(row.right, list(theme_names.values()), theme_var, width=20).pack()
 
-        delay_frame = ttk.Frame(main_frame)
-        delay_frame.pack(anchor=tk.W, fill=tk.X, pady=(0, 15))
-        ttk.Label(delay_frame, text=t("settings_media_delay_label")).pack(side=tk.LEFT, padx=(0, 5))
-        media_delay_var = tk.StringVar(value=str(media_delay_seconds))
-        media_delay_entry = ttk.Entry(delay_frame, width=10, textvariable=media_delay_var)
-        media_delay_entry.pack(side=tk.LEFT)
-        ttk.Label(delay_frame, text=t("settings_range_1_60")).pack(side=tk.LEFT, padx=5)
+        row = card.add_row(t("settings_notification_group"))
+        notification_names = {
+            "win10": t("settings_notification_win10"),
+            "win11": t("settings_notification_win11"),
+            "off": t("settings_notification_off"),
+        }
+        notification_code_by_name = {name: code for code, name in notification_names.items()}
+        notification_var = tk.StringVar(value=notification_names.get(notification_style, notification_names["win10"]))
+        ui_combo(row.right, list(notification_names.values()), notification_var, width=20).pack()
 
-        if not (auto_switch_var.get() and media_players_var.get()):
-            media_delay_entry.config(state="disabled")
+        # Горячая клавиша: подсказка под заголовком заменяется сообщениями во время записи комбинации.
+        row = card.add_row(t("settings_hotkey_group"), desc=t("settings_hotkey_hint"))
+        hotkey_hint_var = tk.StringVar(value=t("settings_hotkey_hint"))
+        row.desc_label.configure(textvariable=hotkey_hint_var)
+        hotkey_frame = tk.Frame(row.right, bg=pal["card"], takefocus=1)
+        hotkey_frame.pack()
+        hotkey_display_var = tk.StringVar(value=hotkey_to_string(new_hotkey_mod, new_hotkey_vk))
+        tk.Label(hotkey_frame, textvariable=hotkey_display_var, bg=pal["field"], fg=pal["text"],
+                 font=(UI_FONT_SEMIBOLD, 10), padx=12, pady=5, highlightthickness=1,
+                 highlightbackground=pal["field_border"]).pack(side="left", padx=(0, 8))
 
-        auto_switch_var.trace('w', toggle_media_players_state)
-        media_players_var.trace('w', toggle_media_delay_state)
+        def finish_recording():
+            hotkey_frame.unbind("<KeyPress>")
+            hotkey_frame.unbind("<FocusOut>")
+            record_button.set_text(t("settings_hotkey_record"))
+            hotkey_hint_var.set(t("settings_hotkey_hint"))
 
-        def build_icon_color_row(parent, initial, default):
-            """Цвет иконки трея в одну строку: образец (клик открывает палитру), поле #RRGGBB, «Сбросить».
-            Возвращает (StringVar, контейнер блока)."""
+        def on_hotkey_key_press(event):
+            nonlocal new_hotkey_mod, new_hotkey_vk
+            keysym = event.keysym
+
+            if keysym in ("Super_L", "Super_R", "Win_L", "Win_R") or "Win" in keysym:
+                hotkey_hint_var.set(t("settings_hotkey_win_forbidden"))
+                recording_modifiers.clear()
+                return "break"
+
+            if keysym in ("Control_L", "Control_R"):
+                recording_modifiers.add("ctrl")
+            elif keysym in ("Alt_L", "Alt_R"):
+                recording_modifiers.add("alt")
+            elif keysym in ("Shift_L", "Shift_R"):
+                recording_modifiers.add("shift")
+            else:
+                if not recording_modifiers:
+                    hotkey_hint_var.set(t("settings_hotkey_need_modifier"))
+                    return "break"
+                mod_flags = 0
+                if "ctrl" in recording_modifiers:
+                    mod_flags |= MOD_CONTROL
+                if "alt" in recording_modifiers:
+                    mod_flags |= MOD_ALT
+                if "shift" in recording_modifiers:
+                    mod_flags |= MOD_SHIFT
+                new_hotkey_mod = mod_flags
+                new_hotkey_vk = event.keycode
+                hotkey_display_var.set(hotkey_to_string(new_hotkey_mod, new_hotkey_vk))
+                recording_modifiers.clear()
+                finish_recording()
+            return "break"
+
+        def start_recording():
+            recording_modifiers.clear()
+            hotkey_hint_var.set(t("settings_hotkey_press_combo"))
+            record_button.set_text(t("settings_hotkey_cancel_record"))
+            hotkey_frame.focus_set()
+            hotkey_frame.bind("<KeyPress>", on_hotkey_key_press)
+            hotkey_frame.bind("<FocusOut>", lambda e: (finish_recording(),
+                              hotkey_display_var.set(hotkey_to_string(new_hotkey_mod, new_hotkey_vk))))
+
+        def on_record_button():
+            if record_button._text == t("settings_hotkey_cancel_record"):
+                finish_recording()
+                hotkey_display_var.set(hotkey_to_string(new_hotkey_mod, new_hotkey_vk))
+            else:
+                start_recording()
+
+        record_button = W11Button(hotkey_frame, pal, t("settings_hotkey_record"), on_record_button)
+        record_button.pack(side="left")
+
+        # Цвет значка в трее: переключатель и по строке на каждый режим (строки видны, только когда включено).
+        row = card.add_row(t("settings_icon_color_enabled"))
+        icon_color_var = tk.BooleanVar(value=icon_color_enabled)
+        ui_toggle(row.right, pal, icon_color_var).pack()
+        icon_color_rows = []
+
+        def toggle_icon_color_fields():
+            for r in icon_color_rows:
+                r.set_visible(icon_color_var.get())
+            update_scroll()
+
+        def build_icon_color_row(card, initial, default, title):
+            """Цвет иконки трея: образец (клик открывает палитру), поле #RRGGBB, «Сбросить»."""
             var = tk.StringVar(value=initial)
-            block = ttk.Frame(parent)   # весь блок целиком скрывается/показывается переключателем
-            block.pack(anchor=tk.W, fill=tk.X)
-            ttk.Label(block, text=t("settings_icon_color_label"),
-                      font=('Arial', 9, 'bold')).pack(anchor=tk.W, pady=(10, 5))
-            row = ttk.Frame(block)
-            row.pack(anchor=tk.W, fill=tk.X)
-            swatch = tk.Label(row, width=4, relief="solid", borderwidth=1, bg=initial, cursor="hand2")
-            swatch.pack(side=tk.LEFT, padx=(0, 6), ipady=1)
-            entry = ttk.Entry(row, width=9, textvariable=var)
-            entry.pack(side=tk.LEFT, padx=(0, 6))
-            ttk.Button(row, text=t("settings_icon_color_reset"),
-                       command=lambda: var.set(default)).pack(side=tk.LEFT)
+            icon_row = card.add_row(title)
+            swatch = tk.Label(icon_row.right, width=4, bg=initial, cursor="hand2", highlightthickness=1,
+                              highlightbackground=pal["field_border"])
+            swatch.pack(side="left", padx=(0, 8), ipady=3)
+            entry = ui_entry(icon_row.right, pal, textvariable=var, width=9, justify="center")
+            entry.pack(side="left", ipady=4, padx=(0, 8))
+            W11Button(icon_row.right, pal, t("settings_icon_color_reset"), lambda: var.set(default)).pack(side="left")
 
             def refresh_swatch(*_):
                 color = normalize_icon_color(var.get())
                 if color:
                     swatch.config(bg=color, text="")
                 else:
-                    swatch.config(bg=window.cget("bg"), text="?")
+                    swatch.config(bg=pal["card"], text="?", fg=pal["muted"])
 
             def pick_color(event=None):
                 current = normalize_icon_color(var.get()) or default
@@ -2543,100 +3918,84 @@ def create_settings_window():
             swatch.bind("<Button-1>", pick_color)
             entry.bind("<<Paste>>", paste_color)
             entry.bind("<Control-KeyPress>", paste_any_layout)
-            var.trace_add('write', refresh_swatch)
-            return var, block
+            var.trace_add("write", refresh_swatch)
+            refresh_swatch()
+            icon_color_rows.append(icon_row)
+            return var
 
-        icon_color_var = tk.BooleanVar(value=icon_color_enabled)
-        ttk.Checkbutton(
-            main_frame,
-            text=t("settings_icon_color_enabled"),
-            variable=icon_color_var,
-            command=lambda: (toggle_icon_color_fields(), fit_window())
-        ).pack(anchor=tk.W, pady=(0, 5))
-
-        modes_row = ttk.Frame(main_frame)
-        modes_row.pack(fill=tk.X, pady=(0, 15))
-        modes_row.columnconfigure(0, weight=1, uniform="modes")
-        modes_row.columnconfigure(1, weight=1, uniform="modes")
-
-        standard_frame = ttk.LabelFrame(modes_row, text=t("settings_standard_mode"), padding="10")
-        standard_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-        ttk.Label(standard_frame, text=t("settings_brightness_label")).pack(anchor=tk.W, pady=(0, 5))
-        standard_brightness_entry = ttk.Entry(standard_frame, width=20)
-        standard_brightness_entry.insert(0, str(modes[0]["brightness"]))
-        standard_brightness_entry.pack(anchor=tk.W, pady=(0, 10))
-        ttk.Label(standard_frame, text=t("settings_dimming_label"), font=('Arial', 9, 'bold')).pack(anchor=tk.W, pady=(0, 5))
-        standard_dimming_var = tk.IntVar(value=modes[0]["local_dimming"])
-        radio_frame_standard = ttk.Frame(standard_frame)
-        radio_frame_standard.pack(anchor=tk.W, fill=tk.X)
-        for i, option in enumerate(get_local_dimming_options()):
-            col = i % 2
-            row = i // 2
-            frame = ttk.Frame(radio_frame_standard)
-            frame.grid(row=row, column=col, sticky=tk.W, padx=(0, 20), pady=2)
-            rb = ttk.Radiobutton(frame, text=f"{option['name']} ({option['value']})",
-                                 variable=standard_dimming_var, value=option["value"],
-                                 command=on_standard_dimming_select)
-            rb.pack(anchor=tk.W)
-        standard_desc_label = ttk.Label(standard_frame, text="", wraplength=220, foreground="gray")
-        standard_desc_label.pack(anchor=tk.W, pady=(5, 0))
-        on_standard_dimming_select()
-        standard_icon_color_var, standard_icon_block = build_icon_color_row(
-            standard_frame, icon_colors[0], DEFAULT_ICON_COLORS[0])
-
-        gaming_frame = ttk.LabelFrame(modes_row, text=t("settings_gaming_mode"), padding="10")
-        gaming_frame.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
-        ttk.Label(gaming_frame, text=t("settings_brightness_label")).pack(anchor=tk.W, pady=(0, 5))
-        gaming_brightness_entry = ttk.Entry(gaming_frame, width=20)
-        gaming_brightness_entry.insert(0, str(modes[1]["brightness"]))
-        gaming_brightness_entry.pack(anchor=tk.W, pady=(0, 10))
-        ttk.Label(gaming_frame, text=t("settings_dimming_label"), font=('Arial', 9, 'bold')).pack(anchor=tk.W, pady=(0, 5))
-        gaming_dimming_var = tk.IntVar(value=modes[1]["local_dimming"])
-        radio_frame_gaming = ttk.Frame(gaming_frame)
-        radio_frame_gaming.pack(anchor=tk.W, fill=tk.X)
-        for i, option in enumerate(get_local_dimming_options()):
-            col = i % 2
-            row = i // 2
-            frame = ttk.Frame(radio_frame_gaming)
-            frame.grid(row=row, column=col, sticky=tk.W, padx=(0, 20), pady=2)
-            rb = ttk.Radiobutton(frame, text=f"{option['name']} ({option['value']})",
-                                 variable=gaming_dimming_var, value=option["value"],
-                                 command=on_gaming_dimming_select)
-            rb.pack(anchor=tk.W)
-        gaming_desc_label = ttk.Label(gaming_frame, text="", wraplength=220, foreground="gray")
-        gaming_desc_label.pack(anchor=tk.W, pady=(5, 0))
-        on_gaming_dimming_select()
-        gaming_icon_color_var, gaming_icon_block = build_icon_color_row(
-            gaming_frame, icon_colors[1], DEFAULT_ICON_COLORS[1])
-
-        def toggle_icon_color_fields():
-            """Показывает поля цвета иконки, пока переключатель включён, и скрывает при выключении."""
-            for block in (standard_icon_block, gaming_icon_block):
-                if icon_color_var.get():
-                    block.pack(anchor=tk.W, fill=tk.X)
-                else:
-                    block.pack_forget()
-
+        icon_caption = t("settings_icon_color_label").rstrip(": ")
+        standard_icon_color_var = build_icon_color_row(card, icon_colors[0], DEFAULT_ICON_COLORS[0],
+                                                       f"{icon_caption}: {t('settings_standard_mode')}")
+        gaming_icon_color_var = build_icon_color_row(card, icon_colors[1], DEFAULT_ICON_COLORS[1],
+                                                     f"{icon_caption}: {t('settings_gaming_mode')}")
         toggle_icon_color_fields()
+        icon_color_var.trace_add("write", lambda *a: toggle_icon_color_fields())
+
+        # ---------- Автоматическое переключение ----------
+        page = pages["auto"]
+        card = page.card()
+
+        row = card.add_row(t("settings_auto_switch"))
+        auto_switch_var = tk.BooleanVar(value=auto_switch_enabled)
+        ui_toggle(row.right, pal, auto_switch_var).pack()
+
+        row_media = card.add_row(t("settings_media_players"))
+        media_players_var = tk.BooleanVar(value=media_players_enabled)
+        media_toggle = ui_toggle(row_media.right, pal, media_players_var)
+        media_toggle.pack()
+
+        row_delay = card.add_row(t("settings_media_delay_label").rstrip(": "))
+        media_delay_var = tk.StringVar(value=str(media_delay_seconds))
+        media_delay_entry = ui_entry(row_delay.right, pal, textvariable=media_delay_var, width=6, justify="center")
+        media_delay_entry.pack(side="left", ipady=4)
+        ui_label(row_delay.right, pal, t("settings_range_1_60"), muted=True, size=9).pack(side="left", padx=(8, 0))
+
+        def refresh_auto_state(*_):
+            auto = auto_switch_var.get()
+            delay_on = auto and media_players_var.get()
+            media_toggle.toggle.set_enabled(auto)
+            row_media.set_dim(not auto, pal)
+            media_delay_entry.config(state="normal" if delay_on else "disabled")
+            row_delay.set_dim(not delay_on, pal)
+
+        auto_switch_var.trace_add("write", refresh_auto_state)
+        media_players_var.trace_add("write", refresh_auto_state)
+        refresh_auto_state()
+
+        # Свои исключения: по умолчанию выключены, пока выключены – блок настроек скрыт и список не применяется.
+        page.gap(16)
+        card = page.card()
+        row = card.add_row(t("settings_exclusions_group"), desc=t("settings_exclusions_toggle_desc"))
+        custom_excl_var = tk.BooleanVar(value=custom_exclusions_enabled)
+        ui_toggle(row.right, pal, custom_excl_var).pack()
 
         custom_excluded_local = list(custom_excluded_processes)
-        exclusions_frame = ttk.LabelFrame(main_frame, text=t("settings_exclusions_group"), padding="10")
-        exclusions_frame.pack(fill=tk.X, pady=(0, 15))
-        ttk.Label(exclusions_frame, text=t("settings_exclusions_hint"), wraplength=480,
-                  foreground="gray").pack(anchor=tk.W, pady=(0, 5))
+        exclusion_entry_var = tk.StringVar()
 
-        exclusions_list_frame = ttk.Frame(exclusions_frame)
-        exclusions_list_frame.pack(fill=tk.X, pady=(0, 5))
-        exclusions_listbox = tk.Listbox(exclusions_list_frame, height=5, exportselection=False)
-        exclusions_scroll = ttk.Scrollbar(exclusions_list_frame, orient="vertical",
+        row_hint = card.add_row(None, desc=t("settings_exclusions_hint"))
+
+        row_list = card.add_row()
+        list_box = tk.Frame(row_list.left, bg=pal["field"], highlightthickness=1,
+                            highlightbackground=pal["field_border"])
+        list_box.pack(fill="x")
+        exclusions_listbox = tk.Listbox(list_box, height=4, exportselection=False, bg=pal["field"],
+                                        fg=pal["text"], selectbackground=pal["accent"],
+                                        selectforeground=pal["on_accent"], relief="flat", bd=0,
+                                        highlightthickness=0, activestyle="none", font=(UI_FONT, 10))
+        exclusions_scroll = ttk.Scrollbar(list_box, orient="vertical", style="W11.Vertical.TScrollbar",
                                           command=exclusions_listbox.yview)
         exclusions_listbox.config(yscrollcommand=exclusions_scroll.set)
-        exclusions_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        exclusions_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        exclusions_listbox.pack(side="left", fill="x", expand=True, padx=(6, 0), pady=4)
         for excluded_name in custom_excluded_local:
             exclusions_listbox.insert(tk.END, excluded_name)
 
-        exclusion_entry_var = tk.StringVar()
+        def refresh_exclusions_scroll():
+            # Полоса прокрутки нужна, только когда записи не помещаются.
+            if exclusions_listbox.size() > 4:
+                exclusions_scroll.pack(side="right", fill="y")
+            else:
+                exclusions_scroll.pack_forget()
+        refresh_exclusions_scroll()
 
         def add_exclusion(name=None):
             normalized = normalize_process_name(exclusion_entry_var.get() if name is None else name)
@@ -2649,31 +4008,39 @@ def create_settings_window():
             custom_excluded_local.append(normalized)
             exclusions_listbox.insert(tk.END, normalized)
             exclusion_entry_var.set("")
+            refresh_exclusions_scroll()
 
         def remove_exclusion():
             for index in reversed(exclusions_listbox.curselection()):
                 del custom_excluded_local[index]
                 exclusions_listbox.delete(index)
+            refresh_exclusions_scroll()
 
         def pick_running_process():
             dialog = tk.Toplevel(window)
+            dialog.withdraw()
             apply_window_icon(dialog)
             dialog.title(t("settings_exclusions_running_title"))
             dialog.transient(window)
             dialog.resizable(False, False)
+            ui_style_window(dialog, pal, dark)
             wx, wy = get_window_origin(window)
             dialog.geometry(f"+{wx + 40}+{wy + 40}")
-            body = ttk.Frame(dialog, padding="10")
-            body.pack(fill=tk.BOTH, expand=True)
-            ttk.Label(body, text=t("settings_exclusions_running_hint"), wraplength=480,
-                      foreground="gray").pack(anchor=tk.W, pady=(0, 5))
-            list_frame = ttk.Frame(body)
-            list_frame.pack(fill=tk.BOTH, expand=True)
-            running_listbox = tk.Listbox(list_frame, width=70, height=14, exportselection=False)
-            running_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=running_listbox.yview)
+            body = tk.Frame(dialog, bg=pal["bg"])
+            body.pack(fill="both", expand=True, padx=20, pady=16)
+            ui_label(body, pal, t("settings_exclusions_running_hint"), muted=True, size=9, bg=pal["bg"],
+                     wraplength=480, justify="left").pack(anchor="w", pady=(0, 8))
+            list_frame = tk.Frame(body, bg=pal["field"], highlightthickness=1,
+                                  highlightbackground=pal["field_border"])
+            list_frame.pack(fill="both", expand=True)
+            running_listbox = tk.Listbox(list_frame, width=70, height=14, exportselection=False,
+                                         bg=pal["field"], fg=pal["text"], selectbackground=pal["accent"],
+                                         selectforeground=pal["on_accent"], relief="flat", bd=0,
+                                         highlightthickness=0, activestyle="none", font=(UI_FONT, 10))
+            running_scroll = ttk.Scrollbar(list_frame, orient="vertical", style="W11.Vertical.TScrollbar",
+                                           command=running_listbox.yview)
             running_listbox.config(yscrollcommand=running_scroll.set)
-            running_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            running_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            running_listbox.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=4)
             running_names = []
 
             def refresh_running():
@@ -2685,6 +4052,10 @@ def create_settings_window():
                         continue
                     running_names.append(proc_name)
                     running_listbox.insert(tk.END, f"{proc_name}  \u2014  {title[:50]}")
+                if running_listbox.size() > 14:
+                    running_scroll.pack(side="right", fill="y")
+                else:
+                    running_scroll.pack_forget()
 
             def choose_running(event=None):
                 selection = running_listbox.curselection()
@@ -2693,206 +4064,249 @@ def create_settings_window():
                     dialog.destroy()
 
             running_listbox.bind("<Double-Button-1>", choose_running)
-            buttons = ttk.Frame(body)
-            buttons.pack(pady=(8, 0))
-            ttk.Button(buttons, text=t("settings_exclusions_add"), command=choose_running).pack(side=tk.LEFT, padx=5)
-            ttk.Button(buttons, text=t("settings_exclusions_refresh"), command=refresh_running).pack(side=tk.LEFT, padx=5)
-            ttk.Button(buttons, text=t("btn_cancel"), command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+            dialog_buttons = tk.Frame(body, bg=pal["bg"])
+            dialog_buttons.pack(anchor="e", pady=(12, 0))
+            W11Button(dialog_buttons, pal, t("settings_exclusions_add"), choose_running, kind="accent",
+                      bg=pal["bg"]).pack(side="left", padx=(0, 8))
+            W11Button(dialog_buttons, pal, t("settings_exclusions_refresh"), refresh_running,
+                      bg=pal["bg"]).pack(side="left", padx=(0, 8))
+            W11Button(dialog_buttons, pal, t("btn_cancel"), dialog.destroy, bg=pal["bg"]).pack(side="left")
             refresh_running()
+            dialog.update_idletasks()
+            dialog.deiconify()
+            ui_style_window(dialog, pal, dark)
             dialog.focus_force()
 
-        exclusion_add_frame = ttk.Frame(exclusions_frame)
-        exclusion_add_frame.pack(fill=tk.X, pady=(0, 5))
-        ttk.Label(exclusion_add_frame, text=t("settings_exclusions_name_label")).pack(side=tk.LEFT, padx=(0, 5))
-        exclusion_entry = ttk.Entry(exclusion_add_frame, textvariable=exclusion_entry_var, width=28)
-        exclusion_entry.pack(side=tk.LEFT, padx=(0, 5))
+        row_add = card.add_row()
+        exclusion_entry = ui_entry(row_add.left, pal, textvariable=exclusion_entry_var, width=30)
+        exclusion_entry.pack(side="left", ipady=5, padx=(0, 8))
         exclusion_entry.bind("<Return>", lambda e: add_exclusion())
-        ttk.Button(exclusion_add_frame, text=t("settings_exclusions_add"),
-                   command=add_exclusion).pack(side=tk.LEFT)
+        W11Button(row_add.left, pal, t("settings_exclusions_add"), add_exclusion).pack(side="left")
+        ui_label(row_add.right, pal, "").pack()
 
-        exclusion_buttons_frame = ttk.Frame(exclusions_frame)
-        exclusion_buttons_frame.pack(fill=tk.X)
-        ttk.Button(exclusion_buttons_frame, text=t("settings_exclusions_running"),
-                   command=pick_running_process).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(exclusion_buttons_frame, text=t("settings_exclusions_remove"),
-                   command=remove_exclusion).pack(side=tk.LEFT)
+        row_buttons = card.add_row()
+        W11Button(row_buttons.left, pal, t("settings_exclusions_running"), pick_running_process).pack(
+            side="left", padx=(0, 8))
+        W11Button(row_buttons.left, pal, t("settings_exclusions_remove"), remove_exclusion).pack(side="left")
 
-        advanced_frame = ttk.Frame(main_frame)
-        advanced_frame.pack(anchor=tk.W, fill=tk.X, pady=(0, 5))
+        exclusion_rows = (row_hint, row_list, row_add, row_buttons)
+
+        def toggle_exclusions_block():
+            for r in exclusion_rows:
+                r.set_visible(custom_excl_var.get())
+            update_scroll()
+
+        toggle_exclusions_block()
+        custom_excl_var.trace_add("write", lambda *a: toggle_exclusions_block())
+
+        # ---------- Режимы монитора ----------
+        page = pages["modes"]
+        def build_mode_card(title, mode):
+            page.section(title)
+            mode_card = page.card()
+
+            row = mode_card.add_row(t("settings_brightness_title"))
+            brightness_var = tk.IntVar(value=int(mode["brightness"]))
+            ui_label(row.right, pal, "", width=4, anchor="e", textvariable=brightness_var).pack(side="right")
+            W11Slider(row.right, pal, brightness_var, 0, 100, width=210).pack(side="right")
+
+            options = get_local_dimming_options()
+            dimming_var = tk.IntVar(value=mode["local_dimming"])
+            display_by_value = {o["value"]: o["name"] for o in options}
+            value_by_display = {v: k for k, v in display_by_value.items()}
+            dimming_row = mode_card.add_row(t("settings_dimming_title"), desc=" ")
+            dimming_text_var = tk.StringVar(value=display_by_value.get(mode["local_dimming"], str(mode["local_dimming"])))
+
+            def on_dimming_select(*_):
+                value = value_by_display.get(dimming_text_var.get())
+                if value is not None:
+                    dimming_var.set(value)
+                for o in options:
+                    if o["value"] == dimming_var.get():
+                        dimming_row.desc_label.config(text=o["description"])
+                        break
+            combo = ui_combo(dimming_row.right, list(display_by_value.values()), dimming_text_var, width=22)
+            combo.pack()
+            combo.bind("<<ComboboxSelected>>", on_dimming_select, add="+")
+            on_dimming_select()
+
+            # Уровень Halo этого режима; строка видна, только когда Halo Control включён (переключатель сверху страницы).
+            level = mode.get("halo")
+            halo_var = tk.IntVar(value=level if isinstance(level, int) else 50)
+            halo_row = mode_card.add_row(t("settings_halo_title"))
+            ui_label(halo_row.right, pal, "", width=4, anchor="e", textvariable=halo_var).pack(side="right")
+            W11Slider(halo_row.right, pal, halo_var, 0, 100, width=210).pack(side="right")
+            halo_rows.append(halo_row)
+            halo_row.set_visible(halo_on_var.get())
+            return brightness_var, dimming_var, halo_var
+
+        # Halo Control: один переключатель сразу для обоих режимов, у каждого режима свой уровень 0-100.
+        # Одинаковые уровни сверяются с монитором один раз и дальше не переписываются, разные – пишутся при смене режима.
+        halo_card = page.card()
+        row = halo_card.add_row(t("settings_halo_title"), desc=t("settings_halo_desc"))
+        halo_on_var = tk.BooleanVar(value=halo_enabled)
+        ui_toggle(row.right, pal, halo_on_var).pack()
+        halo_rows = []
+
+        def refresh_halo(*_):
+            for r in halo_rows:
+                r.set_visible(halo_on_var.get())
+            update_scroll()
+
+        standard_brightness_var, standard_dimming_var, standard_halo_var = build_mode_card(
+            t("settings_standard_mode"), modes[0])
+        gaming_brightness_var, gaming_dimming_var, gaming_halo_var = build_mode_card(
+            t("settings_gaming_mode"), modes[1])
+        halo_on_var.trace_add("write", refresh_halo)
+
+        # ---------- Дополнительно ----------
+        page = pages["advanced"]
+        card = page.card()
+        row = card.add_row(t("settings_advanced_settings"))
         advanced_var = tk.BooleanVar(value=advanced_settings_enabled)
-        advanced_check = ttk.Checkbutton(
-            advanced_frame,
-            text=t("settings_advanced_settings"),
-            variable=advanced_var,
-            command=lambda: (toggle_advanced_container(), fit_window())
-        )
-        advanced_check.pack(anchor=tk.W)
+        ui_toggle(row.right, pal, advanced_var).pack()
 
-        advanced_container = ttk.Frame(main_frame)
-
-        hdr_frame = ttk.LabelFrame(advanced_container, text=t("settings_hdr_group"), padding="10")
-        hdr_frame.pack(fill=tk.X, pady=(0, 15))
-
+        row_auto_set = card.add_row(t("settings_hdr_autoset"), desc=t("settings_hdr_autoset_warning"),
+                                    desc_color=pal["warn"])
         auto_set_var = tk.BooleanVar(value=hdr_settings["auto_set_preset"])
-        auto_set_check = ttk.Checkbutton(
-            hdr_frame,
-            text=t("settings_hdr_autoset"),
-            variable=auto_set_var)
-        auto_set_check.pack(anchor=tk.W, pady=(0, 10))
+        ui_toggle(row_auto_set.right, pal, auto_set_var).pack()
 
-        warning_label = ttk.Label(hdr_frame, text=t("settings_hdr_autoset_warning"), foreground="orange", wraplength=480)
-        warning_label.pack(anchor=tk.W, pady=(0, 5))
-
-        ttk.Label(hdr_frame, text=t("settings_hdr_preset_label")).pack(anchor=tk.W, pady=(0, 5))
-        preset_entry = ttk.Entry(hdr_frame, width=20)
+        row_preset = card.add_row(t("settings_hdr_preset_label").rstrip(": "))
+        preset_entry = ui_entry(row_preset.right, pal, width=6, justify="center")
         preset_entry.insert(0, str(hdr_settings["preset_number"]))
-        preset_entry.pack(anchor=tk.W)
+        preset_entry.pack(ipady=4)
 
-        debug_frame = ttk.LabelFrame(advanced_container, text=t("settings_debug_group"), padding="10")
-        debug_frame.pack(fill=tk.X, pady=(0, 15))
-
+        row_debug = card.add_row(t("settings_debug_enable"), desc=t("settings_debug_file_label", file=DEBUG_LOG_FILE))
         debug_var = tk.BooleanVar(value=debug_enabled)
-        debug_check = ttk.Checkbutton(
-            debug_frame,
-            text=t("settings_debug_enable"),
-            variable=debug_var)
-        debug_check.pack(anchor=tk.W, pady=(0, 5))
-        ttk.Label(debug_frame, text=t("settings_debug_file_label", file=DEBUG_LOG_FILE),
-                  foreground="gray").pack(anchor=tk.W)
+        ui_toggle(row_debug.right, pal, debug_var).pack()
+
+        advanced_rows = (row_auto_set, row_preset, row_debug)
 
         def toggle_advanced_container():
-            if advanced_var.get():
-                advanced_container.pack(fill=tk.X, pady=(0, 15), before=language_frame)
-            else:
-                advanced_container.pack_forget()
-
-        language_frame = ttk.LabelFrame(main_frame, text=t("settings_language_group"), padding="10")
-        language_frame.pack(fill=tk.X, pady=(0, 15))
-        language_names = [TRANSLATIONS[code]["lang_name"] for code in SUPPORTED_LANGUAGES]
-        language_code_by_name = {TRANSLATIONS[code]["lang_name"]: code for code in SUPPORTED_LANGUAGES}
-        language_var = tk.StringVar(value=TRANSLATIONS[current_language]["lang_name"])
-        language_combo = ttk.Combobox(language_frame, textvariable=language_var, values=language_names,
-                                       state="readonly", width=20)
-        language_combo.pack(anchor=tk.W)
-
-        notification_frame = ttk.LabelFrame(main_frame, text=t("settings_notification_group"), padding="10")
-        notification_frame.pack(fill=tk.X, pady=(0, 15))
-        notification_names = {
-            "win10": t("settings_notification_win10"),
-            "win11": t("settings_notification_win11"),
-            "off": t("settings_notification_off"),
-        }
-        notification_code_by_name = {name: code for code, name in notification_names.items()}
-        notification_var = tk.StringVar(value=notification_names.get(notification_style, notification_names["win10"]))
-        ttk.Combobox(notification_frame, textvariable=notification_var, values=list(notification_names.values()),
-                     state="readonly", width=20).pack(anchor=tk.W)
+            for r in advanced_rows:
+                r.set_visible(advanced_var.get())
+            update_scroll()
 
         toggle_advanced_container()
+        advanced_var.trace_add("write", lambda *a: toggle_advanced_container())
 
-        hotkey_frame = ttk.LabelFrame(main_frame, text=t("settings_hotkey_group"), padding="10")
-        hotkey_frame.configure(takefocus=1)
-        hotkey_frame.pack(fill=tk.X, pady=(0, 15))
+        # Сброс всех настроек: подтверждение в окне в стиле программы, затем сброс и закрытие настроек.
+        def do_reset(dialog):
+            dialog.destroy()
+            remember_window_position("settings", window)
+            window.destroy()
+            reset_settings_to_defaults()
 
-        hotkey_display_var = tk.StringVar(value=hotkey_to_string(new_hotkey_mod, new_hotkey_vk))
-        hotkey_value_label = ttk.Label(hotkey_frame, textvariable=hotkey_display_var, font=('Arial', 10, 'bold'))
-        hotkey_value_label.pack(anchor=tk.W, pady=(0, 8))
+        def confirm_reset():
+            dialog = tk.Toplevel(window)
+            dialog.withdraw()
+            apply_window_icon(dialog)
+            dialog.title(t("settings_reset_title"))
+            dialog.transient(window)
+            dialog.resizable(False, False)
+            ui_style_window(dialog, pal, dark)
+            wx, wy = get_window_origin(window)
+            dialog.geometry(f"+{wx + 220}+{wy + 220}")
+            body = tk.Frame(dialog, bg=pal["bg"])
+            body.pack(fill="both", expand=True, padx=24, pady=20)
+            tk.Label(body, text=t("settings_reset_title"), bg=pal["bg"], fg=pal["text"],
+                     font=(UI_FONT_SEMIBOLD, 14), anchor="w").pack(fill="x")
+            tk.Label(body, text=t("settings_reset_confirm"), bg=pal["bg"], fg=pal["muted"], font=(UI_FONT, 10),
+                     wraplength=400, justify="left", anchor="w").pack(fill="x", pady=(8, 18))
+            dialog_buttons = tk.Frame(body, bg=pal["bg"])
+            dialog_buttons.pack(anchor="e")
+            W11Button(dialog_buttons, pal, t("settings_reset_button"), lambda: do_reset(dialog), kind="accent",
+                      bg=pal["bg"], min_width=110).pack(side="left", padx=(0, 8))
+            W11Button(dialog_buttons, pal, t("btn_cancel"), dialog.destroy, bg=pal["bg"],
+                      min_width=110).pack(side="left")
+            dialog.update_idletasks()
+            dialog.deiconify()
+            ui_style_window(dialog, pal, dark)
+            try:
+                dialog.grab_set()
+            except tk.TclError:
+                pass
+            dialog.focus_force()
 
-        def finish_recording():
-            hotkey_frame.unbind("<KeyPress>")
-            hotkey_frame.unbind("<FocusOut>")
-            record_button.config(text=t("settings_hotkey_record"))
+        page.gap(18)
+        card = page.card()
+        row = card.add_row(t("settings_reset_title"), desc=t("settings_reset_desc"))
+        W11Button(row.right, pal, t("settings_reset_button"), confirm_reset).pack()
 
-        def on_hotkey_key_press(event):
-            nonlocal new_hotkey_mod, new_hotkey_vk
-            keysym = event.keysym
+        # ---------- О программе ----------
+        page = pages["about"]
+        head = tk.Frame(page, bg=pal["bg"])
+        page._place(head, (0, 6))
+        logo = tk.Canvas(head, width=56, height=56, bg=pal["bg"], highlightthickness=0, bd=0)
+        logo.pack(side="left", padx=(0, 14))
+        try:
+            buf = io.BytesIO()
+            _render_icon(DEFAULT_ICON_COLORS[0], 56).save(buf, format="PNG")
+            window._logo = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
+            logo.create_image(28, 28, image=window._logo)
+        except Exception as e:
+            log(f"Ошибка значка в разделе «О программе»: {e}")
+        titles = tk.Frame(head, bg=pal["bg"])
+        titles.pack(side="left", fill="x", expand=True)
+        tk.Label(titles, text=t("about_app_title"), bg=pal["bg"], fg=pal["text"], font=(UI_FONT_SEMIBOLD, 15),
+                 anchor="w", justify="left").pack(anchor="w")
+        version_line = tk.Frame(titles, bg=pal["bg"])
+        version_line.pack(anchor="w", pady=(2, 0))
+        tk.Label(version_line, text=t("about_version", version=APP_VERSION), bg=pal["bg"], fg=pal["muted"],
+                 font=(UI_FONT, 10), anchor="w").pack(side="left")
+        tk.Label(version_line, text="\u00b7", bg=pal["bg"], fg=pal["muted"], font=(UI_FONT, 10)).pack(
+            side="left", padx=8)
+        link = tk.Label(version_line, text="github.com/tawiss-cloud/TA-toggle", bg=pal["bg"], fg=pal["accent"],
+                        cursor="hand2", font=(UI_FONT, 10, "underline"))
+        link.pack(side="left")
+        link.bind("<Button-1>", lambda e: webbrowser.open(f"https://github.com/{GITHUB_REPO}"))
 
-            if keysym in ("Super_L", "Super_R", "Win_L", "Win_R") or "Win" in keysym:
-                hotkey_display_var.set(t("settings_hotkey_win_forbidden"))
-                recording_modifiers.clear()
-                return "break"
+        page.section(t("about_current_settings").rstrip(":"))
+        card = page.card()
+        for mode, name_key in ((modes[0], "settings_standard_mode"), (modes[1], "settings_gaming_mode")):
+            parts = [t("about_brightness_part", brightness=mode["brightness"]),
+                     t("about_dimming_part", dimming=get_local_dimming_name(mode["local_dimming"]))]
+            if halo_enabled and mode.get("halo") is not None:
+                parts.append(t("about_halo_part", halo=mode["halo"]))
+            card.add_row(t(name_key), desc=" \u00b7 ".join(parts))
 
-            if keysym in ("Control_L", "Control_R"):
-                recording_modifiers.add("ctrl")
-            elif keysym in ("Alt_L", "Alt_R"):
-                recording_modifiers.add("alt")
-            elif keysym in ("Shift_L", "Shift_R"):
-                recording_modifiers.add("shift")
-            else:
-                if not recording_modifiers:
-                    hotkey_display_var.set(t("settings_hotkey_need_modifier"))
-                    return "break"
-                mod_flags = 0
-                if "ctrl" in recording_modifiers:
-                    mod_flags |= MOD_CONTROL
-                if "alt" in recording_modifiers:
-                    mod_flags |= MOD_ALT
-                if "shift" in recording_modifiers:
-                    mod_flags |= MOD_SHIFT
-                new_hotkey_mod = mod_flags
-                new_hotkey_vk = event.keycode
-                hotkey_display_var.set(hotkey_to_string(new_hotkey_mod, new_hotkey_vk))
-                recording_modifiers.clear()
-                finish_recording()
-            return "break"
+        page.section(t("about_excluded_title").rstrip(":"))
+        card = page.card()
+        excluded_text = t("about_excluded_list")
+        if custom_exclusions_enabled and custom_excluded_processes:
+            excluded_text += " " + t("about_excluded_custom", count=len(custom_excluded_processes))
+        card.add_row(None, desc=excluded_text)
 
-        def start_recording():
-            recording_modifiers.clear()
-            hotkey_display_var.set(t("settings_hotkey_press_combo"))
-            record_button.config(text=t("settings_hotkey_cancel_record"))
-            hotkey_frame.focus_set()
-            hotkey_frame.bind("<KeyPress>", on_hotkey_key_press)
-            hotkey_frame.bind("<FocusOut>", lambda e: (finish_recording(),
-                               hotkey_display_var.set(hotkey_to_string(new_hotkey_mod, new_hotkey_vk))))
+        def open_settings_folder():
+            try:
+                os.startfile(os.path.dirname(SETTINGS_FILE))
+            except Exception as e:
+                log(f"Не удалось открыть папку настроек: {e}")
 
-        def on_record_button():
-            if record_button.cget("text") == t("settings_hotkey_cancel_record"):
-                finish_recording()
-                hotkey_display_var.set(hotkey_to_string(new_hotkey_mod, new_hotkey_vk))
-            else:
-                start_recording()
+        page.gap(14)
+        card = page.card()
+        row = card.add_row(t("settings_auto_update"), desc=t("settings_auto_update_desc"))
+        auto_update_var = tk.BooleanVar(value=auto_update_check)
+        ui_toggle(row.right, pal, auto_update_var).pack()
+        row = card.add_row(t("settings_file_title"), desc=SETTINGS_FILE)
+        W11Button(row.right, pal, t("settings_open_folder"), open_settings_folder).pack()
 
-        record_button = ttk.Button(hotkey_frame, text=t("settings_hotkey_record"), command=on_record_button)
-        record_button.pack(anchor=tk.W)
-        ttk.Label(hotkey_frame,
-                  text=t("settings_hotkey_hint"),
-                  foreground="gray", wraplength=480).pack(anchor=tk.W, pady=(5, 0))
-
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(pady=10)
-        ttk.Button(button_frame, text=t("btn_save"), command=save_all_settings).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text=t("btn_cancel"), command=on_cancel).pack(side=tk.LEFT, padx=5)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        def on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind("<MouseWheel>", on_mousewheel)
-
-        def fit_window():
-            """Высота окна – по содержимому, чтобы всё помещалось без прокрутки.
-            Полоса прокрутки остаётся только если содержимое выше экрана."""
-            window.update_idletasks()
-            content_h = scrollable_frame.winfo_reqheight()
-            content_w = scrollable_frame.winfo_reqwidth()
-            max_h = window.winfo_screenheight() - 80
-            needs_scroll = content_h > max_h
-            h = min(content_h, max_h)
-            w = max(win_width, content_w + (scrollbar.winfo_reqwidth() if needs_scroll else 0))
-            x, y = get_window_origin(window)
-            vy, vh = user32.GetSystemMetrics(77), user32.GetSystemMetrics(79)
-            y = max(vy, min(y, vy + vh - h))
-            window.geometry(f"{w}x{h}+{x}+{y}")
-            if needs_scroll:
-                scrollbar.pack(side="right", fill="y")
-            else:
-                scrollbar.pack_forget()
-
-        fit_window()
-
+        # ---------- завершение ----------
+        for key, canvas_ in zip(("general", "auto", "modes", "advanced", "about"), pages_canvases):
+            ui_bind_wheel(pages[key], canvas_)
+        _settings_ui["window"] = window
+        _settings_ui["show_page"] = show_page
+        show_page(start_page if start_page in pages else "general")
         window.protocol("WM_DELETE_WINDOW", on_cancel)
+        window.update_idletasks()
+        window.deiconify()
+        ui_style_window(window, pal, dark)   # заголовок красим уже у существующего окна
+        window.lift()
         window.focus_force()
 
+    new_hotkey_mod = HOTKEY_MODIFIERS
+    new_hotkey_vk = HOTKEY_VK
+    recording_modifiers = set()
     tk_queue.put(('window', create_window))
 
 def set_hdr_color_preset():
@@ -2957,87 +4371,28 @@ def on_settings(icon, item):
     create_settings_window()
 
 def on_about(icon, item):
-    def create_about_window():
-        about_window = tk.Toplevel()
-        apply_window_icon(about_window)
-        about_window.title(t("about_title"))
-        about_width, about_height = 500, 480
-        about_window.resizable(False, False)
-        about_window.update_idletasks()
-        start_pos = get_window_start_position("about", about_width, about_height)
-        if start_pos is None:
-            start_pos = ((about_window.winfo_screenwidth() - about_width) // 2,
-                         (about_window.winfo_screenheight() - about_height) // 2)
-        about_window.geometry(f"{about_width}x{about_height}+{start_pos[0]}+{start_pos[1]}")
-
-        def close_about():
-            remember_window_position("about", about_window)
-            about_window.destroy()
-        main_frame = ttk.Frame(about_window, padding="20")
-        main_frame.pack(fill=tk.BOTH, expand=True)
-
-        title_label = ttk.Label(main_frame, text=t("about_app_title"), font=('Arial', 14, 'bold'))
-        title_label.pack(pady=10)
-
-        info_text = (
-            t("about_hotkey", hotkey=hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)) + "\n\n" +
-            t("about_current_settings") + "\n" +
-            t("about_standard_line",
-              dimming=get_local_dimming_name(modes[0]['local_dimming']),
-              value=modes[0]['local_dimming'],
-              brightness=modes[0]['brightness']) + "\n" +
-            t("about_gaming_line",
-              dimming=get_local_dimming_name(modes[1]['local_dimming']),
-              value=modes[1]['local_dimming'],
-              brightness=modes[1]['brightness']) + "\n\n" +
-            t("about_excluded_title") + "\n" +
-            t("about_excluded_list") + "\n\n" +
-            t("about_version", version="1.4.6") + " \n"
-        )
-        info_label = ttk.Label(main_frame, text=info_text, justify=tk.LEFT)
-        info_label.pack(pady=10)
-
-        link_frame = ttk.Frame(main_frame)
-        link_frame.pack(pady=(0, 10))
-        link_label = tk.Label(
-            link_frame,
-            text="https://github.com/tawiss-cloud/TA-toggle",
-            fg="blue",
-            cursor="hand2",
-            font=('Arial', 10, 'underline')
-        )
-        link_label.pack()
-        link_label.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/tawiss-cloud/TA-toggle"))
-
-        close_button = ttk.Button(main_frame, text=t("btn_close"), command=close_about)
-        close_button.pack(pady=10)
-
-        about_window.protocol("WM_DELETE_WINDOW", close_about)
-        # Позицию применяем ещё раз, уже после создания виджетов (как в окне настроек): первый вызов
-        # geometry() выше Windows может проигнорировать и поставить окно на своё каскадное место.
-        about_window.update_idletasks()
-        about_window.geometry(f"{about_width}x{about_height}+{start_pos[0]}+{start_pos[1]}")
-        about_window.focus_force()
-
-    tk_queue.put(('window', create_about_window))
+    # Отдельного окна «О программе» нет: открываем настройки на странице «О программе».
+    create_settings_window(start_page="about")
 
 def on_quit(icon, item):
-    global stop_hotkey_thread, media_timer
+    global stop_hotkey_thread, media_timer, app_exiting
     stop_hotkey_thread = True
+    app_exiting = True
     with media_timer_lock:
         if media_timer is not None:
             media_timer.cancel()
             media_timer = None
     try:
-        user32.UnregisterHotKey(None, HOTKEY_ID)
-    except:
+        if hotkey_thread_id:
+            user32.PostThreadMessageW(hotkey_thread_id, 0x0012, 0, 0)   # WM_QUIT: GetMessageW вернёт 0, цикл закончится
+    except Exception:
         pass
     icon.stop()
 
 def hotkey_listener(icon):
     global hotkey_thread_id, stop_hotkey_thread, HOTKEY_MODIFIERS, HOTKEY_VK
     hotkey_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
-    if not user32.RegisterHotKey(None, HOTKEY_ID, HOTKEY_MODIFIERS, HOTKEY_VK):
+    if not user32.RegisterHotKey(None, HOTKEY_ID, HOTKEY_MODIFIERS | MOD_NOREPEAT, HOTKEY_VK):
         log("Не удалось зарегистрировать горячую клавишу")
         return
     try:
@@ -3060,14 +4415,14 @@ def hotkey_listener(icon):
                     user32.UnregisterHotKey(None, HOTKEY_ID)
                 except Exception:
                     pass
-                if user32.RegisterHotKey(None, HOTKEY_ID, pending_hotkey_mod, pending_hotkey_vk):
+                if user32.RegisterHotKey(None, HOTKEY_ID, pending_hotkey_mod | MOD_NOREPEAT, pending_hotkey_vk):
                     HOTKEY_MODIFIERS, HOTKEY_VK = pending_hotkey_mod, pending_hotkey_vk
                     log(f"Горячая клавиша обновлена: {hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)}")
                     show_notification(t("notif_hotkey", hotkey=hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)))
                 else:
                     log("Не удалось зарегистрировать новую горячую клавишу, возвращаем прежнюю")
                     show_notification(t("notif_hotkey_fail"))
-                    user32.RegisterHotKey(None, HOTKEY_ID, previous_mod, previous_vk)
+                    user32.RegisterHotKey(None, HOTKEY_ID, previous_mod | MOD_NOREPEAT, previous_vk)
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
     finally:
@@ -3077,6 +4432,9 @@ def start_tkinter():
     root = tk.Tk()
     root.withdraw()
     def process_queue():
+        if app_exiting:
+            root.quit()
+            return
         try:
             while True:
                 try:
@@ -3090,9 +4448,42 @@ def start_tkinter():
         root.after(100, process_queue)
     root.after(100, process_queue)
     root.mainloop()
+    try:
+        root.destroy()
+    except Exception:
+        pass
+
+SINGLE_INSTANCE_MUTEX_NAME = r"Local\TA-toggle.SingleInstance"
+_instance_mutex_handle = None
+
+def acquire_single_instance():
+    """True – это первый экземпляр. Второй показывает сообщение и должен завершиться.
+    Если сам mutex создать не удалось, запуск не блокируем."""
+    global _instance_mutex_handle
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.wintypes.BOOL, ctypes.wintypes.LPCWSTR]
+    k32.CreateMutexW.restype = ctypes.wintypes.HANDLE
+    k32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    handle = k32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX_NAME)
+    err = ctypes.get_last_error()
+    if not handle:
+        log(f"Не удалось создать mutex единственного экземпляра: {err}")
+        return True
+    if err == 183:  # ERROR_ALREADY_EXISTS
+        k32.CloseHandle(handle)
+        try:
+            ctypes.windll.user32.MessageBoxW(None, t("err_already_running"), "TA-toggle", 0x40)
+        except Exception:
+            pass
+        return False
+    _instance_mutex_handle = handle
+    return True
 
 if __name__ == "__main__":
     load_settings()
+    if not acquire_single_instance():
+        sys.exit(0)
+    migrate_legacy_autostart()
     print(t("console_start"))
     print(t("console_standard", dimming=modes[0]['local_dimming'], brightness=modes[0]['brightness']))
     print(t("console_gaming", dimming=modes[1]['local_dimming'], brightness=modes[1]['brightness']))
@@ -3128,4 +4519,15 @@ if __name__ == "__main__":
         print(t("console_auto_off"))
     print(t("console_excluded"))
     print(t("console_manual_toggle", hotkey=hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)))
+    threading.Thread(target=lambda: (time.sleep(8), maybe_auto_check_update()), daemon=True).start()
     tray_icon.run()
+    # Выход: даём потоку Tk корректно закрыться и завершаем процесс сразу. Иначе интерпретатор при остановке
+    # может зависнуть на потоках (Tk-цикл, DDC-вызов), и консоль, из которой запущена программа, не вернёт приглашение.
+    app_exiting = True
+    tk_thread.join(timeout=1.5)
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(0)
