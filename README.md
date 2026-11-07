@@ -1,6 +1,7 @@
 # TA toggle (Titan Army Monitor Switcher)
 
-<img width="1843" height="743" alt="изображение" src="https://github.com/user-attachments/assets/093a096a-a4e5-48fb-9e67-0d583dd5d2b2" />
+<img width="1382" height="557" alt="изображение" src="https://github.com/user-attachments/assets/467d008f-9043-481c-a4ed-7eafc37328d8" />
+
 
 
 
