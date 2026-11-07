@@ -1,6 +1,7 @@
 # TA toggle (Titan Army Monitor Switcher)
 
-<img width="1382" height="557" alt="изображение" src="https://github.com/user-attachments/assets/65c61eb4-df5a-40f4-8f3e-42b119be63e0" />
+<img width="1843" height="743" alt="изображение" src="https://github.com/user-attachments/assets/093a096a-a4e5-48fb-9e67-0d583dd5d2b2" />
+
 
 
 Python-утилита для автоматического переключения настроек мониторов Titan Army.
