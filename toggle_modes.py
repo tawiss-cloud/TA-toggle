@@ -13,6 +13,9 @@ import json
 import math
 import urllib.error
 import urllib.request
+import urllib.parse
+import subprocess
+import collections
 import os
 import re
 import io
@@ -91,6 +94,7 @@ TRANSLATIONS = {
         "notif_mode": "Режим: {mode}",
         "notif_hotkey": "Горячая клавиша: {hotkey}",
         "notif_hotkey_fail": "❌ Не удалось зарегистрировать горячую клавишу",
+        "notif_hotkey_busy": "❌ {hotkey} занята или недоступна. Смените её в настройках.",
         "notif_settings_saved": "Настройки сохранены",
         "notif_error": "Ошибка: {error}",
         "notif_save_error": "Ошибка сохранения: {error}",
@@ -209,6 +213,56 @@ TRANSLATIONS = {
         "menu_about": "О программе",
         "menu_settings": "Настройки",
         "menu_exit": "Закрыть",
+        "settings_report_title": "Сообщить о проблеме",
+        "settings_monitor_title": "Монитор",
+        "settings_journal_title": "Журнал работы",
+        "settings_journal_desc": "Что делала программа и какие ошибки встретила. Поможет разобраться, если что-то работает не так.",
+        "settings_journal_open": "Открыть",
+        "btn_copy": "Копировать",
+        "settings_monitor_desc": "Если автоопределение ошиблось, выберите монитор вручную.",
+        "monitor_current": "Сейчас используется: {name}",
+        "monitor_incompatible_warning": "Этот монитор не похож на Titan Army. Программа будет менять на нём яркость и другие настройки изображения, и они могут работать иначе.",
+        "monitor_auto": "Автоопределение",
+        "monitor_loading": "Поиск мониторов…",
+        "monitor_missing": "Выбранный монитор (не подключён)",
+        "monitor_unnamed": "Универсальный монитор PnP",
+        "monitor_display_number": "Дисплей {n}",
+        "report_title": "Сообщить о проблеме",
+        "report_intro": "Отчёт создаётся как Issue в репозитории программы на GitHub. Страница откроется в браузере, для отправки нужен аккаунт GitHub.",
+        "report_steps_title": "Как это работает",
+        "report_step1": "1. Если проблему можно повторить, повторите её сейчас: журнал работы программы хранится в памяти, и недавние записи попадут в отчёт.",
+        "report_step2": "2. Заполните форму ниже и нажмите «{create}»: откроется страница нового Issue на GitHub.",
+        "report_step3": "3. Если поле описания на этой странице пустое или в нём подсказка, вставьте текст из буфера обмена (Ctrl+V) и отправьте Issue.",
+        "report_log_title": "Файл лога (необязательно)",
+        "report_log_on": "Запись в файл включена. Приложите его к Issue, если проблема проявляется не сразу. Файл: {file}",
+        "report_log_off": "Запись в файл выключена. Нужна, только если ошибка проявляется не сразу: включите её в настройках и приложите файл к Issue. Файл: {file}",
+        "report_open_settings": "Открыть настройки",
+        "report_show_log": "Показать файл",
+        "report_log_missing": "Файла лога пока нет: включите запись в файл в настройках и повторите действия, вызывающие ошибку.",
+        "report_form_title": "Отчёт",
+        "report_field_title": "Заголовок",
+        "report_field_desc": "Описание",
+        "report_desc_hint": "Что произошло, что вы ожидали и как это повторить",
+        "report_include_log": "Добавить журнал работы",
+        "report_include_log_desc": "Последние записи работы программы ({count} строк). В них могут быть названия запущенных программ и пути на компьютере, в том числе имя пользователя Windows. Посмотрите, что будет отправлено.",
+        "report_preview": "Просмотр",
+        "report_preview_title": "Журнал работы",
+        "report_log_empty": "(журнал пуст)",
+        "report_include_system": "Добавить сведения о системе",
+        "report_include_system_desc": "Версия программы, сборка Windows, язык, режим и состояние debug.",
+        "report_create": "Создать отчёт",
+        "report_err_title": "Введите заголовок.",
+        "report_err_desc": "Опишите проблему.",
+        "report_err_desc_long": "Описание слишком длинное (не больше {limit} символов). Сократите его: подробности можно добавить на странице GitHub.",
+        "report_opened": "Страница GitHub открыта.",
+        "report_clipboard_note": "Текст отчёта скопирован в буфер обмена: вставьте его в поле описания на странице GitHub (Ctrl+V).",
+        "report_clipboard_failed": "Не удалось скопировать текст в буфер обмена: введите описание на странице GitHub вручную.",
+        "report_open_failed": "Не удалось открыть браузер. Откройте страницу вручную: {url}",
+        "report_body_description": "Описание",
+        "report_body_log": "Журнал",
+        "report_body_log_summary": "Журнал работы ({count} строк)",
+        "report_body_system": "Система",
+        "report_body_paste": "Текст отчёта скопирован в буфер обмена: вставьте его сюда (Ctrl+V) вместо этой строки.",
         "tray_title": "Режим {mode}",
         "tray_title_with_process": "Режим {mode} ({process})",
         "console_start": "=== Запуск программы ===",
@@ -248,6 +302,7 @@ TRANSLATIONS = {
         "notif_mode": "Mode: {mode}",
         "notif_hotkey": "Hotkey: {hotkey}",
         "notif_hotkey_fail": "❌ Failed to register hotkey",
+        "notif_hotkey_busy": "❌ {hotkey} is busy or unavailable. Change it in Settings.",
         "notif_settings_saved": "Settings saved",
         "notif_error": "Error: {error}",
         "notif_save_error": "Save error: {error}",
@@ -366,6 +421,56 @@ TRANSLATIONS = {
         "menu_about": "About",
         "menu_settings": "Settings",
         "menu_exit": "Exit",
+        "settings_report_title": "Report a problem",
+        "settings_monitor_title": "Monitor",
+        "settings_journal_title": "Activity log",
+        "settings_journal_desc": "What the program did and which errors it ran into. Helps to find out why something doesn't work.",
+        "settings_journal_open": "Open",
+        "btn_copy": "Copy",
+        "settings_monitor_desc": "If auto-detect picks the wrong one, choose the monitor manually.",
+        "monitor_current": "Currently in use: {name}",
+        "monitor_incompatible_warning": "This monitor doesn't look like a Titan Army. The program will change its brightness and other picture settings, and they may not work as expected.",
+        "monitor_auto": "Auto-detect",
+        "monitor_loading": "Looking for monitors…",
+        "monitor_missing": "Selected monitor (not connected)",
+        "monitor_unnamed": "Generic PnP Monitor",
+        "monitor_display_number": "Display {n}",
+        "report_title": "Report a problem",
+        "report_intro": "The report is created as an Issue in the program's GitHub repository. The page opens in your browser; a GitHub account is required to submit it.",
+        "report_steps_title": "How it works",
+        "report_step1": "1. If the problem can be reproduced, reproduce it now: the program keeps its activity log in memory, and the recent entries go into the report.",
+        "report_step2": "2. Fill in the form below and click \"{create}\": the new Issue page opens on GitHub.",
+        "report_step3": "3. If the description field on that page is empty or holds a hint, paste the text from the clipboard (Ctrl+V) and submit the Issue.",
+        "report_log_title": "Log file (optional)",
+        "report_log_on": "Writing to a file is on. Attach it to the Issue if the problem does not show up right away. File: {file}",
+        "report_log_off": "Writing to a file is off. It is only needed if the problem does not show up right away: turn it on in Settings and attach the file to the Issue. File: {file}",
+        "report_open_settings": "Open settings",
+        "report_show_log": "Show file",
+        "report_log_missing": "There is no log file yet: turn on writing to a file in Settings and repeat the actions that cause the problem.",
+        "report_form_title": "Report",
+        "report_field_title": "Title",
+        "report_field_desc": "Description",
+        "report_desc_hint": "What happened, what you expected, and how to reproduce it",
+        "report_include_log": "Include the activity log",
+        "report_include_log_desc": "Recent program activity ({count} lines). It may contain names of running programs and paths on your computer, including your Windows user name. Check what will be sent.",
+        "report_preview": "Preview",
+        "report_preview_title": "Activity log",
+        "report_log_empty": "(the log is empty)",
+        "report_include_system": "Include system information",
+        "report_include_system_desc": "Program version, Windows build, language, mode and debug state.",
+        "report_create": "Create report",
+        "report_err_title": "Enter a title.",
+        "report_err_desc": "Describe the problem.",
+        "report_err_desc_long": "The description is too long (at most {limit} characters). Shorten it: you can add details on the GitHub page.",
+        "report_opened": "The GitHub page is open.",
+        "report_clipboard_note": "The report text was copied to the clipboard: paste it into the description field on the GitHub page (Ctrl+V).",
+        "report_clipboard_failed": "Could not copy the text to the clipboard: enter the description on the GitHub page manually.",
+        "report_open_failed": "Could not open the browser. Open the page manually: {url}",
+        "report_body_description": "Description",
+        "report_body_log": "Log",
+        "report_body_log_summary": "Activity log ({count} lines)",
+        "report_body_system": "System",
+        "report_body_paste": "The report text was copied to the clipboard: paste it here (Ctrl+V) instead of this line.",
         "tray_title": "Mode {mode}",
         "tray_title_with_process": "Mode {mode} ({process})",
         "console_start": "=== Program starting ===",
@@ -651,16 +756,21 @@ def _dc_target_path_for_monitor(index, paths):
                     return p, True
             except Exception:
                 continue
-    return paths[max(0, min(index, len(paths) - 1))], False
+    # Сопоставить по имени не удалось. Запасной вариант по индексу допустим только когда активный дисплей один:
+    # порядки перечислений у monitorcontrol и DisplayConfig не совпадают, и по индексу можно попасть в чужой монитор.
+    if len(paths) == 1:
+        return paths[0], False
+    return None, False
 
 
-def _dc_device_path_for_monitor(index):
-    """Устойчивый идентификатор монитора с индексом index (device path цели DisplayConfig).
-    В отличие от индекса monitorcontrol не меняется при смене порядка перечисления. None – не удалось."""
+def _dc_target_info_for_monitor(index):
+    """(device path, понятное имя) монитора с индексом index; None вместо того, что получить не удалось.
+    Device path – устойчивый идентификатор цели DisplayConfig: в отличие от индекса monitorcontrol не меняется
+    при смене порядка перечисления."""
     try:
         gdi = _dc_monitor_gdi_name(index)
         if not gdi:
-            return None
+            return None, None
         for p in _dc_active_paths():
             try:
                 if _dc_source_gdi_name(p.sourceInfo.adapterId, p.sourceInfo.id) != gdi:
@@ -673,10 +783,15 @@ def _dc_device_path_for_monitor(index):
             req.header.adapterId = p.targetInfo.adapterId
             req.header.id = p.targetInfo.id
             if _dc_user32.DisplayConfigGetDeviceInfo(ctypes.byref(req.header)) == 0 and req.monitorDevicePath:
-                return req.monitorDevicePath
+                return req.monitorDevicePath, (req.monitorFriendlyDeviceName or None)
     except Exception as e:
         log(f"Не удалось получить device path монитора {index}: {e}")
-    return None
+    return None, None
+
+
+def _dc_device_path_for_monitor(index):
+    """Устойчивый идентификатор монитора с индексом index. None – не удалось."""
+    return _dc_target_info_for_monitor(index)[0]
 
 
 def _try_advanced_color_v2(path):
@@ -720,10 +835,15 @@ def _query_windows_hdr():
     paths = _dc_active_paths()
     if not paths:
         raise OSError("активные дисплеи не найдены")
-    idx = monitor_index if monitor_index is not None else 0
+    idx = _resolve_monitor_index(redetect=False)
+    if idx is None:
+        idx = 0
     path, by_name = _dc_target_path_for_monitor(idx, paths)
+    if path is None:
+        # Лучше честная ошибка (проверка уйдёт на яркость), чем ответ по чужому монитору.
+        raise OSError("не удалось сопоставить монитор с дисплеем Windows")
     if not by_name:
-        log("HDR (Windows): монитор сопоставлен по индексу, а не по имени (запасной вариант)")
+        log("HDR (Windows): монитор сопоставлен без имени: активный дисплей единственный (запасной вариант)")
 
     result, err = _try_advanced_color_v2(path)
     if err is None:
@@ -750,6 +870,7 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "monitor_settings.json")
 
 monitor_index = None
 monitor_device_path = None  # устойчивый идентификатор выбранного монитора (DisplayConfig device path)
+monitor_manual = False      # монитор выбран вручную в настройках: автоопределение и перепривязка не применяются
 hotkey_thread_id = None
 stop_hotkey_thread = False
 app_exiting = False  # выставляется при выходе из программы: останавливает цикл Tk
@@ -799,6 +920,11 @@ game_state_lock = threading.Lock()
 # "media" – для медиаплеера, "brightness" – только яркость), чтобы результат одного способа не
 # использовался для другого. Значение: (результат, время реальной проверки).
 hdr_method_cache = {}
+# Последняя записанная в журнал HDR-проверка по способу: (результат, пояснение, время). Одинаковый результат
+# повторно пишется не чаще раза в HDR_LOG_REPEAT секунд, иначе устойчивая ошибка забивает журнал каждые 2 секунды.
+hdr_log_last = {}
+HDR_LOG_REPEAT = 60.0
+loop_log_gate = {"media_hdr_error": None}   # окно, для которого ошибка проверки в ветке медиаплеера уже записана
 # Последняя ошибка Windows-проверки (одинаковую пишем в лог один раз) и подробности последней
 # успешной проверки (версия API, сырое значение флагов) – для строки лога.
 last_windows_hdr_error = None
@@ -883,7 +1009,7 @@ halo_verified_value = None  # значение Halo, уже сверенное �
 halo_readable = None  # умеет ли монитор отдавать текущий Halo (0x46): None – не проверяли, False – нет
 ui_theme = "dark"  # тема окон: dark (по умолчанию) / light / system
 # Версия программы и репозиторий для проверки обновлений. При выпуске новой версии меняется только APP_VERSION.
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 GITHUB_REPO = "tawiss-cloud/TA-toggle"
 UPDATE_CHECK_INTERVAL = 14 * 24 * 3600  # автоматическая проверка – раз в 14 дней
 auto_update_check = False   # автоматическая проверка обновлений (по умолчанию выключена)
@@ -978,13 +1104,29 @@ def _remember_window_position_unlocked(key, win):
 def is_debug_active():
     return advanced_settings_enabled and debug_enabled
 
+# Журнал работы всегда копится в памяти (сколько-то первых записей – запуск программы – и последние записи),
+# чтобы его можно было приложить к отчёту о проблеме и при выключенном debug. В файл и в консоль пишет
+# только включённый debug, как и раньше.
+_LOG_HEAD_LINES = 100
+_LOG_TAIL_LINES = 400
+_log_head = []
+_log_tail = collections.deque(maxlen=_LOG_TAIL_LINES)
+_log_skipped = [0]   # сколько записей между началом и концом журнала уже вытеснено
+
 def log(msg):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {msg}"
+    if len(_log_head) < _LOG_HEAD_LINES:
+        _log_head.append(line)
+    else:
+        if len(_log_tail) == _LOG_TAIL_LINES:
+            _log_skipped[0] += 1
+        _log_tail.append(line)
     if is_debug_active():
         print(msg)
         try:
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             with open(DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(f"[{timestamp}] {msg}\n")
+                f.write(f"{line}\n")
         except Exception:
             pass
 
@@ -1012,14 +1154,21 @@ def hotkey_to_string(mod, vk):
     return "+".join(parts)
 
 def request_hotkey_update(new_mod, new_vk):
-    global pending_hotkey_mod, pending_hotkey_vk
+    global pending_hotkey_mod, pending_hotkey_vk, HOTKEY_MODIFIERS, HOTKEY_VK
     pending_hotkey_mod = new_mod
     pending_hotkey_vk = new_vk
+    posted = False
     if hotkey_thread_id:
         try:
-            user32.PostThreadMessageW(hotkey_thread_id, WM_UPDATE_HOTKEY, 0, 0)
+            posted = bool(user32.PostThreadMessageW(hotkey_thread_id, WM_UPDATE_HOTKEY, 0, 0))
         except Exception as e:
             log(f"Ошибка отправки сообщения об обновлении горячей клавиши: {e}")
+    if not posted and not app_exiting and not stop_hotkey_thread:
+        # Поток горячей клавиши не работает (например, завершился из-за ошибки): запускаем его заново,
+        # он зарегистрирует новое сочетание.
+        log("Поток горячей клавиши не отвечает – запускаем заново")
+        HOTKEY_MODIFIERS, HOTKEY_VK = new_mod, new_vk
+        threading.Thread(target=lambda: hotkey_listener(tray_icon), daemon=True).start()
 
 def _migrate_legacy_settings():
     """Прежние версии хранили monitor_settings.json рядом с программой. Переносим его в папку данных
@@ -1042,13 +1191,15 @@ def _migrate_legacy_settings():
             with open(legacy, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             data['migrated_from_legacy'] = True
-            tmp_path = SETTINGS_FILE + ".tmp"
-            with open(tmp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, SETTINGS_FILE)
+            # Имя временного файла уникально для процесса и потока: load_settings() вызывается до проверки
+            # единственного экземпляра, и второй запуск мог писать в тот же ".tmp".
+            write_json_atomic(SETTINGS_FILE, data)
             log(f"Настройки перенесены: {legacy} -> {SETTINGS_FILE}")
-        os.remove(legacy)
-        log("Старый файл настроек удалён")
+        try:
+            os.remove(legacy)
+            log("Старый файл настроек удалён")
+        except FileNotFoundError:
+            pass   # одновременно запущенный второй экземпляр уже удалил файл
     except Exception as e:
         log(f"Не удалось перенести настройки в AppData: {e}")
 
@@ -1079,7 +1230,7 @@ def load_settings():
     _migrate_legacy_settings()
     global modes, hdr_settings, auto_switch_enabled, media_players_enabled, media_delay_seconds
     global HOTKEY_MODIFIERS, HOTKEY_VK, current_language, advanced_settings_enabled, debug_enabled
-    global notification_style, icon_color_enabled, monitor_device_path, custom_exclusions_enabled, halo_enabled, ui_theme
+    global notification_style, icon_color_enabled, monitor_device_path, monitor_manual, custom_exclusions_enabled, halo_enabled, ui_theme
     global auto_update_check, last_update_check, update_info, legacy_migrated
     language_loaded = False
     modes_loaded = False
@@ -1112,6 +1263,7 @@ def load_settings():
                     notification_style = data['notification_style']
                 if isinstance(data.get('monitor_device_path'), str) and data['monitor_device_path']:
                     monitor_device_path = data['monitor_device_path']
+                monitor_manual = bool(data.get('monitor_manual') is True and monitor_device_path)
                 if isinstance(data.get('auto_switch_enabled'), bool):
                     auto_switch_enabled = data['auto_switch_enabled']
                 if isinstance(data.get('media_players_enabled'), bool):
@@ -1218,6 +1370,7 @@ def _save_settings_unlocked():
             'icon_color_enabled': icon_color_enabled,
             'notification_style': notification_style,
             'monitor_device_path': monitor_device_path,
+            'monitor_manual': monitor_manual,
             'auto_switch_enabled': auto_switch_enabled,
             'media_players_enabled': media_players_enabled,
             'media_delay_seconds': media_delay_seconds,
@@ -1481,6 +1634,62 @@ def migrate_legacy_autostart():
     except Exception as e:
         log(f"Ошибка переноса прежнего автозапуска: {e}")
 
+# Индекс монитора в get_monitors() не постоянен: он меняется при подключении или отключении других мониторов,
+# после выхода из сна, сброса драйвера. Поэтому индекс сверяется с сохранённым device path, а если монитор не найден
+# (отключён, ещё не отвечает), поиск повторяется. Команды чужому монитору не отправляются. Сверка идёт по событиям, а
+# не по таймеру: когда изменилось число мониторов, после ошибки операции, при смене выбора монитора и при запуске.
+# В обычной работе никаких запросов к Windows и монитору ради этого не делается.
+MONITOR_REDETECT_INTERVAL = 30.0     # как часто повторять поиск, если монитор не найден, секунды
+_monitor_check = {"dirty": True, "count": None, "redetect": 0.0, "missing_logged": False}
+monitor_marker_cache = {}   # device path -> True/False: признак Titan Army (VCP 0xE0), выясненный при поиске монитора
+# monitor_index и monitor_device_path меняют разные потоки без общей блокировки. Это допустимо: присваивание числа или
+# строки атомарно, а операция берёт индекс один раз (target_idx) и работает с тем монитором, который выбрала. Устаревшее
+# значение исправляется следующей сверкой. Вызывать _resolve_monitor_index под monitor_io_lock нельзя: поиск монитора
+# сам берёт эту (нереентрантную) блокировку.
+
+def _resolve_monitor_index(monitors=None, redetect=True):
+    """Актуальный индекс нашего монитора или None, если он не найден. Сверка идёт только когда индекс не определён,
+    изменилось число мониторов или после ошибки операции (флаг dirty).
+    redetect=False – только сверка по device path, без опроса мониторов по DDC/CI."""
+    global monitor_index
+    now = time.time()
+    check = _monitor_check
+    count = len(monitors) if monitors is not None else check["count"]
+    due = monitor_index is None or check["count"] != count or check["dirty"]
+    if not due:
+        return monitor_index
+    if monitors is None:
+        try:
+            monitors = get_monitors()
+        except Exception as e:
+            log(f"Ошибка перечисления мониторов: {e}")
+            return monitor_index
+    check["dirty"], check["count"] = False, len(monitors)
+    saved = monitor_device_path
+    if saved:
+        if monitor_index is not None and monitor_index < len(monitors):
+            current_path = _dc_device_path_for_monitor(monitor_index)
+            if current_path == saved:
+                return monitor_index
+            if current_path is None:
+                # DisplayConfig не ответил: сверить не удалось. Индекс не трогаем, проверим при следующем обращении.
+                check["dirty"] = True
+                return monitor_index
+        for i in range(len(monitors)):
+            if i != monitor_index and _dc_device_path_for_monitor(i) == saved:
+                log(f"Индекс монитора изменился: {monitor_index} -> {i}")
+                monitor_index = i
+                return i
+    elif monitor_index is not None and monitor_index < len(monitors):
+        return monitor_index   # привязки нет (монитор выбран «по умолчанию»): сверять не с чем
+    if not redetect:
+        return monitor_index
+    monitor_index = None   # монитор не найден: лучше не отвечать, чем отправить команду другому монитору
+    if now - check["redetect"] < MONITOR_REDETECT_INTERVAL:
+        return None
+    check["redetect"] = now
+    return monitor_index if find_titan_army_monitor() else None
+
 def safe_monitor_operation(operation, monitor_idx=None):
     # get_monitors() может бросить исключение при перечислении мониторов –
     # поэтому весь блок, включая его, находится под try.
@@ -1489,8 +1698,14 @@ def safe_monitor_operation(operation, monitor_idx=None):
         if not monitors:
             log("Мониторы не найдены")
             return None
-        target_idx = monitor_idx if monitor_idx is not None else monitor_index
-        if target_idx is None or target_idx >= len(monitors):
+        target_idx = monitor_idx if monitor_idx is not None else _resolve_monitor_index(monitors)
+        if target_idx is None:
+            if not _monitor_check["missing_logged"]:
+                _monitor_check["missing_logged"] = True
+                log("Монитор не определён: поиск будет повторяться")
+            return None
+        _monitor_check["missing_logged"] = False
+        if target_idx >= len(monitors):
             log(f"Неверный индекс монитора: {target_idx}")
             return None
         monitor = monitors[target_idx]
@@ -1501,6 +1716,7 @@ def safe_monitor_operation(operation, monitor_idx=None):
                 return operation(monitor)
     except Exception as e:
         log(f"Ошибка операции с монитором: {e}")
+        _monitor_check["dirty"] = True   # после сбоя индекс перепроверяется при следующем обращении
         return None
 
 def _is_media_player_name(name):
@@ -1608,7 +1824,10 @@ def is_hdr_enabled(force_refresh=False, hwnd=None, method=None):
         # появляется, кэш не срабатывает и каждый вызов идёт в монитор.
         result, how = _measure_hdr(requested)
         hdr_method_cache[requested] = (result, now)
-        log(f"HDR проверка [{requested}]: {result} ({how})")
+        last = hdr_log_last.get(requested)
+        if last is None or last[0] != (result, how) or now - last[1] >= HDR_LOG_REPEAT:
+            hdr_log_last[requested] = ((result, how), now)
+            log(f"HDR проверка [{requested}]: {result} ({how})")
         return result
 
 def is_hdr_blocked(force_refresh=False, hwnd=None, method=None):
@@ -1790,7 +2009,27 @@ def _remember_monitor(i):
         log(f"Монитор привязан к device path: {path}")
         save_settings()
 
+def _probe_mode_switch(monitor, attempts=3, delay=0.3):
+    """Признак Titan Army: VCP 0xE0 читается, максимум не меньше 14. Вызывать внутри `with monitor`.
+    (True/False, пояснение) – монитор ответил (подходит / не подходит); (None, пояснение) – ответа не было.
+    DDC/CI часто спотыкается на первом обращении, поэтому ошибка чтения не считается отрицательным ответом:
+    чтение повторяется."""
+    error = None
+    for attempt in range(attempts):
+        try:
+            _, maximum = monitor.vcp.get_vcp_feature(VCP_MODE_SWITCH)
+            return maximum >= 14, f"максимум {maximum}"
+        except Exception as e:
+            error = e
+            if attempt < attempts - 1:
+                time.sleep(delay)
+    return None, f"ошибка чтения ({error})"
+
 def find_titan_army_monitor():
+    """Ищет монитор: сначала по сохранённому device path, затем по признаку Titan Army (VCP 0xE0 с максимумом
+    не меньше 14 – подходит любой монитор этой серии). Если привязки ещё не было, берётся первый доступный
+    монитор. Если привязка была, а монитор не найден, чужой монитор не выбирается: поиск повторится позже.
+    Если монитор выбран вручную (monitor_manual), используется только он: без автоопределения."""
     global monitor_index
     # get_monitors() может бросить исключение при перечислении – перехватываем,
     # иначе упадёт вызывающий код (__main__ или toggle_mode).
@@ -1800,45 +2039,125 @@ def find_titan_army_monitor():
         log(f"Ошибка перечисления мониторов: {e}")
         return False
     log(f"Найдено мониторов: {len(monitors)}")
-    if monitor_device_path:
-        for i, monitor in enumerate(monitors):
-            if _dc_device_path_for_monitor(i) != monitor_device_path:
-                continue
-            try:
-                with monitor:
-                    pass
-            except Exception as e:
-                log(f"Сохранённый монитор (индекс {i}) недоступен: {e}")
-                continue
-            monitor_index = i
-            log(f"Найден сохранённый монитор по device path (индекс {i})")
-            return True
-        log("Сохранённый монитор не найден – автоопределение")
-    for i, monitor in enumerate(monitors):
-        try:
-            with monitor:
+    infos = [_dc_target_info_for_monitor(i) for i in range(len(monitors))]
+    for i, (path, name) in enumerate(infos):
+        log(f"Монитор {i}: {name or '?'} ({path or 'device path не определён'})")
+    saved = monitor_device_path
+    manual = monitor_manual and bool(saved)
+    found = None
+    remember = False
+    # Пробуем мониторы по DDC/CI только под monitor_io_lock, чтобы не мешать обмену из других потоков.
+    with monitor_io_lock:
+        if saved:
+            for i, monitor in enumerate(monitors):
+                if infos[i][0] != saved:
+                    continue
                 try:
-                    current, maximum = monitor.vcp.get_vcp_feature(VCP_MODE_SWITCH)
-                    if maximum >= 14:
-                        monitor_index = i
-                        log(f"Найден Titan Army (индекс {i})")
-                        _remember_monitor(i)
-                        return True
+                    with monitor:
+                        pass
                 except Exception as e:
-                    log(f"Монитор {i}: VCP 0xE0 не поддерживается")
-        except Exception as e:
-            log(f"Монитор {i}: ошибка доступа - {e}")
-            continue
-    for i, monitor in enumerate(monitors):
-        try:
-            with monitor:
-                monitor_index = i
+                    log(f"Сохранённый монитор (индекс {i}) недоступен: {e}")
+                    continue
+                found = i
+                log(f"Найден сохранённый монитор по device path (индекс {i})")
+                break
+            if found is None:
+                log("Выбранный вручную монитор не найден" if manual else "Сохранённый монитор не найден – автоопределение")
+        if found is None and not manual:
+            for i, monitor in enumerate(monitors):
+                try:
+                    with monitor:
+                        matches, detail = _probe_mode_switch(monitor)
+                        if matches is not None and infos[i][0]:
+                            monitor_marker_cache[infos[i][0]] = matches
+                        if matches:
+                            found = i
+                            remember = True
+                            log(f"Найден Titan Army (индекс {i}, VCP 0xE0: {detail})")
+                            break
+                        log(f"Монитор {i}: VCP 0xE0 не подходит ({detail})")
+                except Exception as e:
+                    log(f"Монитор {i}: ошибка доступа - {e}")
+                    continue
+        if found is None and not saved:
+            for i, monitor in enumerate(monitors):
+                try:
+                    with monitor:
+                        pass
+                except Exception:
+                    continue
+                found = i
                 log(f"Выбран первый доступный монитор (индекс {i})")
-                return True
+                break
+    if found is None:
+        monitor_index = None
+        log("Подходящий монитор не найден!")
+        return False
+    monitor_index = found
+    _monitor_check["dirty"], _monitor_check["count"] = False, len(monitors)
+    if remember:
+        _remember_monitor(found)
+    return True
+
+def probe_monitor_marker(path):
+    """Проверяет признак Titan Army у монитора с этим device path (опрос по DDC/CI) и запоминает результат.
+    True / False / None – как у _probe_mode_switch. Вызывать из рабочего потока."""
+    try:
+        monitors = get_monitors()
+        with monitor_io_lock:
+            for i, monitor in enumerate(monitors):
+                if _dc_device_path_for_monitor(i) != path:
+                    continue
+                with monitor:
+                    result, detail = _probe_mode_switch(monitor)
+                log(f"Монитор {i}: проверка признака Titan Army: {detail}")
+                if result is not None:
+                    monitor_marker_cache[path] = result
+                return result
+    except Exception as e:
+        log(f"Не удалось проверить монитор: {e}")
+    return None
+
+def list_monitor_choices(probe=False):
+    """Мониторы для списка в настройках: [{"path", "name", "label", "compatible", "in_use"}]. Имя и номер дисплея
+    берутся у Windows (DisplayConfig). compatible: True – признак Titan Army есть, False – нет, None – неизвестно.
+    probe=False: к мониторам не обращаемся, признак берётся из памяти (его выяснил поиск монитора).
+    probe=True: признак перечитывается по DDC/CI (кнопка обновления); это занимает время, вызывать из рабочего потока."""
+    try:
+        monitors = get_monitors()
+    except Exception as e:
+        log(f"Ошибка перечисления мониторов: {e}")
+        return []
+    choices = []
+    for i in range(len(monitors)):
+        path, name = _dc_target_info_for_monitor(i)
+        if not path:
+            continue   # без device path выбор не сохранить
+        try:
+            gdi = _dc_monitor_gdi_name(i)
         except Exception:
-            continue
-    log("Ни один монитор не доступен!")
-    return False
+            gdi = None
+        number = re.search(r"(\d+)$", gdi or "")
+        label = name or t("monitor_unnamed")
+        if number:
+            label += f" ({t('monitor_display_number', n=number.group(1))})"
+        if probe:
+            probe_monitor_marker(path)
+        compatible = monitor_marker_cache.get(path)
+        choices.append({"path": path, "name": label, "compatible": compatible, "in_use": i == monitor_index,
+                        "label": ("\u26a0 " if compatible is False else "") + label})   # \u26a0 – монитор не похож на Titan Army
+    return choices
+
+def rebind_monitor_selection():
+    """После смены выбора монитора в настройках: индекс определяется заново (вызывать из рабочего потока)."""
+    global monitor_index
+    monitor_index = None
+    _monitor_check["dirty"] = True
+    _monitor_check["redetect"] = 0.0
+    _monitor_check["missing_logged"] = False
+    log("Выбор монитора изменён – поиск монитора заново")
+    if not find_titan_army_monitor():
+        log("Монитор не найден: поиск будет повторяться")
 
 def normalize_icon_color(text):
     """'#RRGGBB' (пробелы по краям игнорируются) -> '#RRGGBB' в верхнем регистре, иначе None."""
@@ -2505,9 +2824,12 @@ def monitor_loop():
                                     confirmed_hdr_active = True
                                     hdr_confirmed_for_hwnd = hwnd
                                     log("HDR подтверждён – медиаплеер не активирует игровой режим (запомнено для этого окна)")
-                                else:
+                                elif loop_log_gate["media_hdr_error"] != hwnd:
+                                    # Цикл повторяет проверку каждую секунду: одну и ту же ошибку пишем один раз на окно.
+                                    loop_log_gate["media_hdr_error"] = hwnd
                                     log("Ошибка чтения яркости – медиаплеер не активирует игровой режим")
                             else:
+                                loop_log_gate["media_hdr_error"] = None
                                 with media_timer_lock:
                                     if media_timer is None:
                                         log(f"Медиаплеер обнаружен: {process_name} – запускаем задержку {media_delay_seconds} сек")
@@ -3149,14 +3471,17 @@ class W11NavItem(tk.Canvas):
 
 
 class W11Icon(tk.Canvas):
-    """Маленький значок 28×28: 'refresh' (проверка обновлений) или 'warn' (треугольник с восклицательным знаком).
+    """Маленький значок 28×28: 'refresh' (проверка обновлений), 'warn' (треугольник с восклицательным знаком)
+    или 'report' (облачко с восклицательным знаком).
     С command ведёт себя как кнопка с подсветкой при наведении."""
     SIZE = 28
     _ring = False
 
-    def __init__(self, parent, pal, icon, command=None, bg=None):
-        super().__init__(parent, width=self.SIZE, height=self.SIZE, bg=bg or pal["bg"], highlightthickness=0,
+    def __init__(self, parent, pal, icon, command=None, bg=None, size=None):
+        size = size or self.SIZE   # размер задаётся только для значка 'report'; остальные нарисованы под 28
+        super().__init__(parent, width=size, height=size, bg=bg or pal["bg"], highlightthickness=0,
                          bd=0, cursor="hand2" if command else "arrow", takefocus=1 if command else 0)
+        self.size = size
         self.pal, self.icon, self.command, self._bg = pal, icon, command, bg or pal["bg"]
         self.hover = False
         self.busy = False
@@ -3186,7 +3511,7 @@ class W11Icon(tk.Canvas):
         self.delete("all")
         shapes = []
         if self.command and (self.hover or self._ring) and not self.busy:
-            shapes.append(("rrect", 0, 0, self.SIZE, self.SIZE, 6, p["nav_hover"], None))
+            shapes.append(("rrect", 0, 0, self.size, self.size, 6, p["nav_hover"], None))
         if self.icon == "refresh":
             color = p["disabled"] if self.busy else (p["text"] if self.hover else p["muted"])
             cx = cy = 14
@@ -3200,11 +3525,21 @@ class W11Icon(tk.Canvas):
             b1 = (px - tx * 0.6 + nx * 3.6, py - ty * 0.6 + ny * 3.6)
             b2 = (px - tx * 0.6 - nx * 3.6, py - ty * 0.6 - ny * 3.6)
             shapes.append(("poly", (tip[0], tip[1], b1[0], b1[1], b2[0], b2[1]), color))
+        elif self.icon == "report":   # облачко с «!»; знак рисуем цветом фона, чтобы он выглядел вырезом
+            color = p["text"] if self.hover else p["muted"]
+            cut = p["nav_hover"] if self.hover else self._bg
+            # Рисунок задан на сетке 24×24 так, чтобы границы знака «!» попадали точно на пиксели (ось x=12, толщина 2):
+            # при дробных координатах тонкий вырез получал размытые края и лишние светлые пиксели.
+            k = self.size / 24.0
+            shapes.append(("rrect", 2 * k, 3 * k, 22 * k, 19 * k, 5 * k, color, None))
+            shapes.append(("poly", (6 * k, 17 * k, 6 * k, 22.5 * k, 12 * k, 17 * k), color))
+            shapes.append(("rrect", 11 * k, 7 * k, 13 * k, 12 * k, 0.5 * k, cut, None))   # палочка «!»
+            shapes.append(("rrect", 11 * k, 14 * k, 13 * k, 16 * k, 0.5 * k, cut, None))  # точка «!»
         else:   # warn: треугольник и восклицательный знак рисуем фигурами (шрифтовой «!» выходил за основание)
             shapes.append(("poly", (14, 4.5, 24.5, 22.5, 3.5, 22.5), p["warn"]))
             shapes.append(("line", 14, 10.6, 14, 15.6, 2.2, "#000000"))
             shapes.append(("circle", 14, 18.9, 1.35, "#000000", None))
-        _paint(self, self.SIZE, self.SIZE, self._bg, shapes)
+        _paint(self, self.size, self.size, self._bg, shapes)
 
 
 class W11Row:
@@ -3401,6 +3736,316 @@ def ui_scrolled_page(window, pal, page_factory, footer_height=0):
 _settings_ui = {"window": None, "show_page": None}
 
 
+# ===================== ОТЧЁТ О ПРОБЛЕМЕ (GitHub Issues) =====================
+# Issue создаётся от имени самого пользователя: открывается страница «New issue» с заголовком и описанием.
+# Ключ доступа к GitHub в программе не хранится. Журнал работы (он копится в памяти, см. log()) целиком в ссылку
+# не помещается, поэтому текст отчёта уходит в буфер обмена, а пользователь вставляет его на странице (Ctrl+V).
+_report_ui = {"window": None}
+REPORT_URL_LIMIT = 1900     # ссылки длиннее надёжно открываются не во всех браузерах
+REPORT_LOG_MAX_CHARS = 50000   # у описания Issue предел 65536 символов
+REPORT_BODY_MAX = 64000        # итоговый текст отчёта не длиннее: с запасом до предела GitHub
+REPORT_DESCRIPTION_MAX = 20000  # описание пользователя; остальное место получает журнал
+
+def collect_system_info():
+    """Сведения для отчёта: только версия, сборка Windows и состояние программы."""
+    run = "exe" if getattr(sys, "frozen", False) else f"Python {sys.version.split()[0]}"
+    try:
+        mode_name = get_mode_name(current_mode_index)
+    except Exception:
+        mode_name = "?"
+    return [("Version", APP_VERSION), ("Windows build", _WIN_BUILD or "?"), ("Language", current_language),
+            ("Mode", mode_name), ("Debug", "on" if is_debug_active() else "off"), ("Run", run)]
+
+def collect_recent_log():
+    """(текст, число строк): начало журнала (запуск программы) и последние записи."""
+    lines = list(_log_head)
+    skipped = _log_skipped[0]
+    tail = list(_log_tail)
+    if skipped:
+        lines.append(f"... {skipped} lines skipped ...")
+    lines += tail
+    text = "\n".join(lines)
+    if len(text) > REPORT_LOG_MAX_CHARS:
+        text = "...\n" + text[-REPORT_LOG_MAX_CHARS:]
+    return text, len(lines)
+
+def build_issue_body(description, include_system, log_text=None, log_lines=0):
+    description = description.strip()
+    if len(description) > REPORT_DESCRIPTION_MAX:
+        description = description[:REPORT_DESCRIPTION_MAX] + "..."
+    parts = [f"## {t('report_body_description')}", description or "-", ""]
+    if log_text:
+        # Журналу достаётся всё место, что осталось под предел GitHub (запас 1500 символов на заголовки и сведения о системе).
+        budget = max(0, REPORT_BODY_MAX - len(description) - 1500)
+        if len(log_text) > budget:
+            log_text = "...\n" + log_text[-budget:]
+        # Ограждение длиннее любой цепочки обратных кавычек в журнале, иначе блок закроется раньше времени.
+        longest = max((len(run) for run in re.findall(r"`+", log_text)), default=0)
+        fence = "`" * max(4, longest + 1)
+        parts += [f"## {t('report_body_log')}", "<details>",
+                  f"<summary>{t('report_body_log_summary', count=log_lines)}</summary>", "",
+                  fence, log_text, fence, "", "</details>", ""]
+    if include_system:
+        parts.append(f"## {t('report_body_system')}")
+        parts += [f"- {key}: {value}" for key, value in collect_system_info()]
+    return "\n".join(parts).rstrip() + "\n"
+
+def build_issue_url(title, body):
+    query = urllib.parse.urlencode({"title": title, "body": body}, quote_via=urllib.parse.quote)
+    return f"https://github.com/{GITHUB_REPO}/issues/new?{query}"
+
+def _bind_clipboard_keys(widget):
+    """Ctrl+C/V/X/A по коду клавиши: в Tk при русской раскладке они иначе не срабатывают."""
+    def on_key(event):
+        action = {86: "<<Paste>>", 67: "<<Copy>>", 88: "<<Cut>>"}.get(event.keycode)
+        if action:
+            widget.event_generate(action)
+            return "break"
+        if event.keycode == 65:
+            if isinstance(widget, tk.Text):
+                widget.tag_add("sel", "1.0", "end-1c")
+            else:
+                widget.select_range(0, "end")
+                widget.icursor("end")
+            return "break"
+    widget.bind("<Control-KeyPress>", on_key)
+
+def show_log_preview(parent, pal, dark, text):
+    """Окно только для чтения: что именно из журнала попадёт в отчёт."""
+    win = tk.Toplevel(parent)
+    win.withdraw()
+    apply_window_icon(win)
+    win.title(t("report_preview_title"))
+    ui_style_window(win, pal, dark)
+    win.transient(parent)
+    footer = tk.Frame(win, bg=pal["bg"])
+    footer.pack(side="bottom", fill="x")
+    tk.Frame(footer, height=1, bg=pal["divider"]).pack(fill="x")
+    W11Button(footer, pal, t("btn_close"), win.destroy, bg=pal["bg"], min_width=110).pack(
+        side="right", padx=(0, 24), pady=12)
+
+    def copy_log():
+        try:
+            win.clipboard_clear()
+            win.clipboard_append(text or "")
+            win.update()
+        except tk.TclError:
+            pass
+    W11Button(footer, pal, t("btn_copy"), copy_log, bg=pal["bg"], min_width=110).pack(
+        side="right", padx=(0, 8), pady=12)
+    frame = tk.Frame(win, bg=pal["bg"])
+    frame.pack(fill="both", expand=True, padx=(20, 12), pady=(16, 12))
+    scroll = ttk.Scrollbar(frame, orient="vertical", style="W11.Vertical.TScrollbar")
+    scroll.pack(side="right", fill="y")
+    view = tk.Text(frame, wrap="word", bg=pal["field"], fg=pal["text"], relief="flat", bd=0,
+                   highlightthickness=1, highlightbackground=pal["field_border"], highlightcolor=pal["field_border"],
+                   selectbackground=pal["accent"], selectforeground=pal["on_accent"], font=("Consolas", 9),
+                   padx=8, pady=6, yscrollcommand=scroll.set)
+    view.pack(side="left", fill="both", expand=True)
+    scroll.configure(command=view.yview)
+    view.insert("1.0", text or t("report_log_empty"))
+    view.configure(state="disabled")
+    _bind_clipboard_keys(view)
+    px, py = parent.winfo_rootx(), parent.winfo_rooty()
+    win.geometry(f"760x480+{px + 30}+{py + 30}")
+    win.deiconify()
+    ui_style_window(win, pal, dark)
+    win.focus_force()
+
+def show_issue_report_dialog():
+    previous = _report_ui.get("window")
+    try:
+        if previous is not None and previous.winfo_exists():
+            previous.deiconify()
+            previous.lift()
+            previous.focus_force()
+            return
+    except tk.TclError:
+        pass
+    pal, dark = ui_palette()
+    width = 640
+    inner_w = width - 48
+    dialog = tk.Toplevel()
+    dialog.withdraw()
+    apply_window_icon(dialog)
+    dialog.title(t("report_title"))
+    dialog.resizable(False, False)
+    ui_style_window(dialog, pal, dark)
+    ui_setup_ttk(dialog, pal)
+    _report_ui["window"] = dialog
+
+    title_var = tk.StringVar()
+    system_var = tk.BooleanVar(value=True)
+    log_var = tk.BooleanVar(value=True)
+    status_var = tk.StringVar()
+    ui = {}
+
+    def set_status(text, color=None):
+        status_var.set(text)
+        ui["status"].configure(fg=color or pal["warn"])
+
+    def refresh_log_state(*_):
+        try:
+            on = is_debug_active()
+            ui["log_row"].desc_label.configure(
+                text=t("report_log_on" if on else "report_log_off", file=DEBUG_LOG_FILE),
+                fg=pal["accent"] if on else pal["muted"])
+        except tk.TclError:
+            pass
+
+    def open_settings():
+        create_settings_window(start_page="advanced")
+
+    def show_log_file():
+        try:
+            if os.path.exists(DEBUG_LOG_FILE):
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(DEBUG_LOG_FILE)])
+            else:
+                set_status(t("report_log_missing"))
+        except Exception as e:
+            log(f"Не удалось показать файл лога: {e}")
+
+    def preview_log():
+        show_log_preview(dialog, pal, dark, collect_recent_log()[0])
+
+    def create_report():
+        title = title_var.get().strip()[:120]
+        description = ui["text"].get("1.0", "end").strip()
+        if not title:
+            set_status(t("report_err_title"))
+            ui["entry"].focus_set()
+            return
+        if not description:
+            set_status(t("report_err_desc"))
+            ui["text"].focus_set()
+            return
+        if len(description) > REPORT_DESCRIPTION_MAX:
+            set_status(t("report_err_desc_long", limit=REPORT_DESCRIPTION_MAX))
+            ui["text"].focus_set()
+            return
+        include_log = log_var.get()
+        log_text, log_lines = collect_recent_log() if include_log else (None, 0)
+        body = build_issue_body(description, system_var.get(), log_text, log_lines)
+        url = build_issue_url(title, body)
+        note = None
+        if include_log or len(url) > REPORT_URL_LIMIT:
+            # Длинный текст в ссылку не кладём: он уходит в буфер обмена, а в ссылке остаётся только заголовок.
+            try:
+                dialog.clipboard_clear()
+                dialog.clipboard_append(body)
+                dialog.update()
+                note = t("report_clipboard_note")
+                url = build_issue_url(title, t("report_body_paste"))
+            except tk.TclError:
+                note = t("report_clipboard_failed")
+                short_body = build_issue_body(description, system_var.get())
+                url = build_issue_url(title, short_body)
+                if len(url) > REPORT_URL_LIMIT:
+                    url = build_issue_url(title, "")
+        try:
+            opened = webbrowser.open(url)
+        except Exception as e:
+            log(f"Не удалось открыть браузер: {e}")
+            opened = False
+        if not opened:
+            set_status(t("report_open_failed", url=f"https://github.com/{GITHUB_REPO}/issues/new"))
+            return
+        log("Открыта страница нового Issue на GitHub")
+        set_status(t("report_opened") + (" " + note if note else ""), pal["accent"])
+
+    # ---------- нижняя панель ----------
+    footer = tk.Frame(dialog, bg=pal["bg"])
+    footer.pack(side="bottom", fill="x")
+    tk.Frame(footer, height=1, bg=pal["divider"]).pack(fill="x")
+    buttons = tk.Frame(footer, bg=pal["bg"])
+    buttons.pack(fill="x", padx=24, pady=12)
+    W11Button(buttons, pal, t("btn_close"), dialog.destroy, bg=pal["bg"], min_width=110).pack(side="right")
+    W11Button(buttons, pal, t("report_create"), create_report, kind="accent", bg=pal["bg"],
+              min_width=160).pack(side="right", padx=(0, 8))
+
+    # ---------- содержимое ----------
+    body = tk.Frame(dialog, bg=pal["bg"])
+    body.pack(fill="both", expand=True, padx=24, pady=(20, 6))
+
+    def heading(text, size, pady):
+        tk.Label(body, text=text, bg=pal["bg"], fg=pal["text"], font=(UI_FONT_SEMIBOLD, size),
+                 anchor="w").pack(fill="x", pady=pady)
+
+    heading(t("report_title"), 15, 0)
+    tk.Label(body, text=t("report_intro"), bg=pal["bg"], fg=pal["muted"], font=(UI_FONT, 10), anchor="w",
+             justify="left", wraplength=inner_w).pack(fill="x", pady=(6, 0))
+
+    heading(t("report_steps_title"), 11, (14, 6))
+    card = W11Card(body, pal)
+    card.pack(fill="x")
+    steps_row = card.add_row()
+    step_texts = (t("report_step1"), t("report_step2", create=t("report_create")), t("report_step3"))
+    step_labels = []
+    for text in step_texts:
+        label = tk.Label(steps_row.left, text=text, bg=pal["card"], fg=pal["text"], font=(UI_FONT, 10),
+                         anchor="w", justify="left", wraplength=inner_w - 60)
+        label.pack(anchor="w", pady=2)
+        step_labels.append(label)
+    steps_row.left.bind("<Configure>",
+                        lambda e: [l.configure(wraplength=max(120, e.width - 4)) for l in step_labels])
+    log_row = card.add_row(t("report_log_title"), desc=" ")
+    ui["log_row"] = log_row
+    W11Button(log_row.right, pal, t("report_open_settings"), open_settings).pack(side="left", padx=(0, 8))
+    W11Button(log_row.right, pal, t("report_show_log"), show_log_file).pack(side="left")
+    refresh_log_state()
+
+    heading(t("report_form_title"), 11, (14, 6))
+    tk.Label(body, text=t("report_field_title"), bg=pal["bg"], fg=pal["text"], font=(UI_FONT, 10),
+             anchor="w").pack(fill="x")
+    entry = ui_entry(body, pal, textvariable=title_var, width=10)
+    entry.pack(fill="x", pady=(4, 10), ipady=5)
+    ui["entry"] = entry
+    tk.Label(body, text=t("report_field_desc"), bg=pal["bg"], fg=pal["text"], font=(UI_FONT, 10),
+             anchor="w").pack(fill="x")
+    tk.Label(body, text=t("report_desc_hint"), bg=pal["bg"], fg=pal["muted"], font=(UI_FONT, 9),
+             anchor="w").pack(fill="x")
+    text_widget = tk.Text(body, height=6, wrap="word", bg=pal["field"], fg=pal["text"],
+                          insertbackground=pal["text"], relief="flat", bd=0, highlightthickness=1,
+                          highlightbackground=pal["field_border"], highlightcolor=pal["accent"],
+                          selectbackground=pal["accent"], selectforeground=pal["on_accent"],
+                          font=(UI_FONT, 10), padx=8, pady=6, undo=True)
+    text_widget.pack(fill="x", pady=(4, 10))
+    ui["text"] = text_widget
+    _bind_clipboard_keys(entry)
+    _bind_clipboard_keys(text_widget)
+
+    options_card = W11Card(body, pal)
+    options_card.pack(fill="x")
+    log_count = collect_recent_log()[1]
+    include_log_row = options_card.add_row(t("report_include_log"), desc=t("report_include_log_desc", count=log_count))
+    W11Button(include_log_row.right, pal, t("report_preview"), preview_log).pack(side="left", padx=(0, 12))
+    ui_toggle(include_log_row.right, pal, log_var).pack(side="left")
+    system_row = options_card.add_row(t("report_include_system"), desc=t("report_include_system_desc"))
+    ui_toggle(system_row.right, pal, system_var).pack()
+
+    status = tk.Label(body, textvariable=status_var, bg=pal["bg"], fg=pal["warn"], font=(UI_FONT, 9),
+                      anchor="w", justify="left", wraplength=inner_w)
+    status.pack(fill="x", pady=(8, 0))
+    ui["status"] = status
+
+    # Состояние записи в файл обновляется, когда пользователь возвращается в окно из настроек.
+    dialog.bind("<FocusIn>", refresh_log_state, add="+")
+
+    # Окно показываем невидимым, чтобы все блоки успели принять размер, затем подгоняем высоту и ставим по центру.
+    dialog.attributes("-alpha", 0.0)
+    dialog.geometry(f"{width}x760+0+0")
+    dialog.deiconify()
+    for _ in range(3):
+        dialog.update_idletasks()
+    screen_w, screen_h = dialog.winfo_screenwidth(), dialog.winfo_screenheight()
+    height = min(dialog.winfo_reqheight(), screen_h - 80)
+    dialog.geometry(f"{width}x{height}+{(screen_w - width) // 2}+{max(0, (screen_h - height) // 2 - 20)}")
+    ui_style_window(dialog, pal, dark)
+    dialog.attributes("-alpha", 1.0)
+    dialog.lift()
+    dialog.focus_force()
+    entry.focus_set()
+
 def parse_int_field(text):
     """Целое число из поля ввода; вместо сырого «invalid literal for int()» – понятное сообщение."""
     try:
@@ -3413,9 +4058,10 @@ def reset_settings_to_defaults():
     """Возвращает все настройки программы к значениям по умолчанию, сохраняет и применяет их."""
     global icon_color_enabled, notification_style, auto_switch_enabled, media_players_enabled
     global media_delay_seconds, custom_exclusions_enabled, halo_enabled, halo_verified_value, ui_theme
-    global advanced_settings_enabled, debug_enabled, HOTKEY_MODIFIERS, HOTKEY_VK, monitor_device_path
+    global advanced_settings_enabled, debug_enabled, HOTKEY_MODIFIERS, HOTKEY_VK, monitor_device_path, monitor_manual
     global current_language, auto_update_check, last_update_check, update_info
     prev_auto_switch = auto_switch_enabled
+    prev_manual = monitor_manual
     prev_hotkey = (HOTKEY_MODIFIERS, HOTKEY_VK)
     current_language = detect_system_language()
     modes[:] = get_default_modes()
@@ -3439,6 +4085,7 @@ def reset_settings_to_defaults():
     debug_enabled = False
     HOTKEY_MODIFIERS, HOTKEY_VK = DEFAULT_HOTKEY_MOD, DEFAULT_HOTKEY_VK
     monitor_device_path = None
+    monitor_manual = False
     window_positions.clear()
     try:
         set_autostart(False)
@@ -3453,6 +4100,8 @@ def reset_settings_to_defaults():
         threading.Thread(target=on_auto_switch_changed, args=(auto_switch_enabled,), daemon=True).start()
 
     def reapply_current_mode():
+        if prev_manual:
+            rebind_monitor_selection()   # ручной выбор сброшен: монитор определяется заново
         with game_state_lock:
             blocked, _ = is_hdr_blocked(force_refresh=True)
             if not blocked:
@@ -3537,6 +4186,15 @@ def create_settings_window(start_page="general"):
                 advanced_settings_enabled = advanced_var.get()
                 debug_enabled = debug_var.get()
 
+                global monitor_manual, monitor_device_path
+                previous_monitor = (monitor_manual, monitor_device_path)
+                chosen_monitor = monitor_chosen["path"]
+                if chosen_monitor:
+                    monitor_manual, monitor_device_path = True, chosen_monitor
+                elif monitor_manual:
+                    monitor_manual, monitor_device_path = False, None   # вернулись к автоопределению: прежняя привязка не нужна
+                monitor_changed = (monitor_manual, monitor_device_path) != previous_monitor
+
                 modes[0]["brightness"] = standard_brightness
                 modes[0]["local_dimming"] = standard_dimming
                 modes[1]["brightness"] = gaming_brightness
@@ -3598,6 +4256,8 @@ def create_settings_window(start_page="general"):
                 # сменить current_mode_index прямо во время записи. Применяем и при ошибке записи файла:
                 # значения в памяти от неё не зависят.
                 def reapply_current_mode():
+                    if monitor_changed:
+                        rebind_monitor_selection()
                     with game_state_lock:
                         blocked, _ = is_hdr_blocked(force_refresh=True)
                         if not blocked:
@@ -3760,6 +4420,24 @@ def create_settings_window(start_page="general"):
         for key, caption in (("auto", t("settings_nav_auto")), ("modes", t("settings_nav_modes")),
                              ("advanced", t("settings_nav_advanced")), ("about", t("settings_nav_about"))):
             pages_canvases.append(make_page(key, caption)[1])
+
+        # Внизу бокового меню: значок и подпись, открывают окно отчёта о проблеме.
+        report_box = tk.Frame(nav, bg=pal["bg"])
+        report_box.pack(side="bottom", fill="x", padx=14, pady=(0, 16))
+        report_icon = W11Icon(report_box, pal, "report", command=show_issue_report_dialog, size=24)
+        report_icon.pack(side="left")
+        report_label = tk.Label(report_box, text=t("settings_report_title"), bg=pal["bg"], fg=pal["muted"],
+                                font=(UI_FONT, 9), cursor="hand2")
+        report_label.pack(side="left", padx=(6, 0))
+
+        def report_hover(value):
+            report_label.configure(fg=pal["text"] if value else pal["muted"])
+            report_icon._set_hover(value)
+        report_label.bind("<Enter>", lambda e: report_hover(True))
+        report_label.bind("<Leave>", lambda e: report_hover(False))
+        report_label.bind("<Button-1>", lambda e: show_issue_report_dialog())
+        report_icon.bind("<Enter>", lambda e: report_label.configure(fg=pal["text"]), add="+")
+        report_icon.bind("<Leave>", lambda e: report_label.configure(fg=pal["muted"]), add="+")
 
         # ---------- Общие ----------
         page = pages["general"]
@@ -4140,6 +4818,86 @@ def create_settings_window(start_page="general"):
             halo_row.set_visible(halo_on_var.get())
             return brightness_var, dimming_var, halo_var
 
+        # Выбор монитора: список собирается в фоне (опрос по DDC/CI занимает время). Ручной выбор запоминается
+        # жёстко: если выбранный монитор не подключён, программа не подставляет другой.
+        monitor_card = page.card()
+        monitor_row = monitor_card.add_row(t("settings_monitor_title"), desc=t("settings_monitor_desc"))
+        auto_label = t("monitor_auto")
+        monitor_chosen = {"path": monitor_device_path if monitor_manual else None}
+        monitor_labels = {auto_label: None}
+        monitor_compat = {}
+        monitor_current = {"name": None}   # имя монитора, которым программа управляет сейчас
+        monitor_var = tk.StringVar(value=t("monitor_loading") if monitor_chosen["path"] else auto_label)
+        monitor_combo = ui_combo(monitor_row.right, [auto_label], monitor_var, width=30)
+        monitor_combo.pack(side="left")
+
+        def show_monitor_note():
+            if monitor_chosen["path"] and monitor_compat.get(monitor_chosen["path"]) is False:
+                monitor_row.desc_label.configure(text=t("monitor_incompatible_warning"), fg=pal["warn"])
+            elif monitor_current["name"]:
+                monitor_row.desc_label.configure(text=t("monitor_current", name=monitor_current["name"]), fg=pal["muted"])
+            else:
+                monitor_row.desc_label.configure(text=t("settings_monitor_desc"), fg=pal["muted"])
+
+        def on_monitor_select(*_):
+            path = monitor_labels.get(monitor_var.get(), monitor_chosen["path"])
+            monitor_chosen["path"] = path
+            show_monitor_note()
+            if path and monitor_compat.get(path) is None:
+                # Признак Titan Army у этого монитора ещё не проверяли: проверяем один раз, только по выбору вручную.
+                def worker():
+                    result = probe_monitor_marker(path)
+
+                    def apply():
+                        try:
+                            if window.winfo_exists():
+                                monitor_compat[path] = result
+                                show_monitor_note()
+                        except tk.TclError:
+                            pass
+                    tk_queue.put(("window", apply))
+                threading.Thread(target=worker, daemon=True).start()
+        monitor_combo.bind("<<ComboboxSelected>>", on_monitor_select, add="+")
+
+        def fill_monitor_choices(choices):
+            try:
+                if not window.winfo_exists():
+                    return
+                labels, compat = {auto_label: None}, {}
+                for choice in choices:
+                    label, n = choice["label"], 2
+                    while label in labels:
+                        label, n = f"{choice['label']} #{n}", n + 1
+                    labels[label] = choice["path"]
+                    compat[choice["path"]] = choice["compatible"]
+                chosen = monitor_chosen["path"]
+                if chosen and chosen not in labels.values():
+                    labels[t("monitor_missing")] = chosen   # выбранный монитор сейчас не подключён: выбор не теряем
+                monitor_labels.clear()
+                monitor_labels.update(labels)
+                monitor_compat.clear()
+                monitor_compat.update(compat)
+                monitor_current["name"] = next((c["name"] for c in choices if c["in_use"]), None)
+                monitor_combo.configure(values=list(labels))
+                monitor_var.set(next((l for l, p in labels.items() if p == chosen), auto_label))
+                monitor_refresh.set_busy(False)
+                show_monitor_note()
+            except tk.TclError:
+                pass
+
+        def load_monitor_choices(probe=False):
+            monitor_refresh.set_busy(True)
+
+            def worker():
+                choices = list_monitor_choices(probe)
+                tk_queue.put(("window", lambda: fill_monitor_choices(choices)))
+            threading.Thread(target=worker, daemon=True).start()
+
+        monitor_refresh = W11Icon(monitor_row.right, pal, "refresh", command=lambda: load_monitor_choices(True))
+        monitor_refresh.pack(side="left", padx=(8, 0))
+        load_monitor_choices()
+        page.gap(14)
+
         # Halo Control: один переключатель сразу для обоих режимов, у каждого режима свой уровень 0-100.
         # Одинаковые уровни сверяются с монитором один раз и дальше не переписываются, разные – пишутся при смене режима.
         halo_card = page.card()
@@ -4178,7 +4936,18 @@ def create_settings_window(start_page="general"):
 
         row_debug = card.add_row(t("settings_debug_enable"), desc=t("settings_debug_file_label", file=DEBUG_LOG_FILE))
         debug_var = tk.BooleanVar(value=debug_enabled)
-        ui_toggle(row_debug.right, pal, debug_var).pack()
+        def open_log_folder():
+            # Файл лога есть – открываем папку с уже выделенным файлом, иначе просто папку.
+            try:
+                if os.path.exists(DEBUG_LOG_FILE):
+                    subprocess.Popen(["explorer", "/select,", os.path.normpath(DEBUG_LOG_FILE)])
+                else:
+                    os.startfile(os.path.dirname(DEBUG_LOG_FILE))
+            except Exception as e:
+                log(f"Не удалось открыть папку с логом: {e}")
+
+        W11Button(row_debug.right, pal, t("settings_open_folder"), open_log_folder).pack(side="left", padx=(0, 12))
+        ui_toggle(row_debug.right, pal, debug_var).pack(side="left")
 
         advanced_rows = (row_auto_set, row_preset, row_debug)
 
@@ -4230,6 +4999,10 @@ def create_settings_window(start_page="general"):
 
         page.gap(18)
         card = page.card()
+        # «Журнал работы» не зависит от дополнительных настроек: он стоит перед сбросом, в той же карточке.
+        row_journal = card.add_row(t("settings_journal_title"), desc=t("settings_journal_desc"))
+        W11Button(row_journal.right, pal, t("settings_journal_open"),
+                  lambda: show_log_preview(window, pal, dark, collect_recent_log()[0])).pack()
         row = card.add_row(t("settings_reset_title"), desc=t("settings_reset_desc"))
         W11Button(row.right, pal, t("settings_reset_button"), confirm_reset).pack()
 
@@ -4391,12 +5164,20 @@ def on_quit(icon, item):
 
 def hotkey_listener(icon):
     global hotkey_thread_id, stop_hotkey_thread, HOTKEY_MODIFIERS, HOTKEY_VK
-    hotkey_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
-    if not user32.RegisterHotKey(None, HOTKEY_ID, HOTKEY_MODIFIERS | MOD_NOREPEAT, HOTKEY_VK):
-        log("Не удалось зарегистрировать горячую клавишу")
-        return
+    msg = ctypes.wintypes.MSG()
+    # Очередь сообщений потока создаём сразу: иначе PostThreadMessageW, пришедший до первого GetMessageW, не дойдёт.
+    user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
+    my_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+    hotkey_thread_id = my_thread_id
+    registered = None   # сочетание, которое сейчас действительно зарегистрировано этим потоком
+    if user32.RegisterHotKey(None, HOTKEY_ID, HOTKEY_MODIFIERS | MOD_NOREPEAT, HOTKEY_VK):
+        registered = (HOTKEY_MODIFIERS, HOTKEY_VK)
+    else:
+        # Поток не завершаем: сочетание могла занять другая программа, и пользователь должен суметь выбрать другое.
+        log("Не удалось зарегистрировать горячую клавишу (возможно, она занята другой программой): её можно сменить в настройках")
+        # Сочетание уже записано в настройках, поэтому при каждом запуске будет та же неудача: пользователь должен узнать о ней.
+        show_notification(t("notif_hotkey_busy", hotkey=hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)))
     try:
-        msg = ctypes.wintypes.MSG()
         while not stop_hotkey_thread:
             ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
             if ret == 0:
@@ -4410,23 +5191,35 @@ def hotkey_listener(icon):
                 else:
                     toggle_mode(icon)
             elif msg.message == WM_UPDATE_HOTKEY:
-                previous_mod, previous_vk = HOTKEY_MODIFIERS, HOTKEY_VK
                 try:
                     user32.UnregisterHotKey(None, HOTKEY_ID)
                 except Exception:
                     pass
                 if user32.RegisterHotKey(None, HOTKEY_ID, pending_hotkey_mod | MOD_NOREPEAT, pending_hotkey_vk):
-                    HOTKEY_MODIFIERS, HOTKEY_VK = pending_hotkey_mod, pending_hotkey_vk
+                    registered = (pending_hotkey_mod, pending_hotkey_vk)
+                    HOTKEY_MODIFIERS, HOTKEY_VK = registered
                     log(f"Горячая клавиша обновлена: {hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)}")
                     show_notification(t("notif_hotkey", hotkey=hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)))
                 else:
-                    log("Не удалось зарегистрировать новую горячую клавишу, возвращаем прежнюю")
                     show_notification(t("notif_hotkey_fail"))
-                    user32.RegisterHotKey(None, HOTKEY_ID, previous_mod | MOD_NOREPEAT, previous_vk)
+                    # Окно настроек уже записало новое сочетание в HOTKEY_*, поэтому «прежнее» берём из того, что
+                    # реально было зарегистрировано, а не из HOTKEY_*.
+                    if registered and user32.RegisterHotKey(None, HOTKEY_ID, registered[0] | MOD_NOREPEAT, registered[1]):
+                        HOTKEY_MODIFIERS, HOTKEY_VK = registered
+                        log("Не удалось зарегистрировать новую горячую клавишу, возвращаем прежнюю")
+                    else:
+                        registered = None
+                        log("Не удалось зарегистрировать новую горячую клавишу")
+                    try:
+                        save_settings()   # в файле должно остаться то сочетание, которое действует
+                    except Exception as e:
+                        log(f"Не удалось сохранить настройки: {e}")
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
     finally:
         user32.UnregisterHotKey(None, HOTKEY_ID)
+        if hotkey_thread_id == my_thread_id:
+            hotkey_thread_id = None   # request_hotkey_update по этому признаку поймёт, что поток не работает
 
 def start_tkinter():
     root = tk.Tk()
@@ -4495,7 +5288,7 @@ if __name__ == "__main__":
     print(t("console_hotkey", hotkey=hotkey_to_string(HOTKEY_MODIFIERS, HOTKEY_VK)))
 
     if not find_titan_army_monitor():
-        monitor_index = 0
+        log("Монитор при запуске не найден: поиск будет повторяться")
     sync_current_mode()
 
     tk_thread = threading.Thread(target=start_tkinter, daemon=True)
