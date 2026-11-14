@@ -121,7 +121,6 @@ TRANSLATIONS = {
         "settings_exclusions_running_hint": "Программы с видимыми окнами. Выберите нужную (двойной щелчок или кнопка «Добавить») – будет добавлено точное имя процесса окна.",
         "settings_exclusions_refresh": "Обновить",
         "settings_exclusions_remove": "Удалить выбранное",
-        "settings_exclusions_name_label": "Название процесса",
         "err_exclusion_invalid": "Введите имя процесса, например game.exe",
         "err_exclusion_duplicate": "{name} уже есть в исключениях",
         "settings_range_1_60": "(1-60)",
@@ -135,8 +134,6 @@ TRANSLATIONS = {
         "settings_notification_win10": "Win 10",
         "settings_notification_win11": "Win 11",
         "settings_notification_off": "Выключено",
-        "settings_brightness_label": "Яркость (0-100):",
-        "settings_dimming_label": "Локальное затемнение:",
         "toggle_on": "Вкл",
         "toggle_off": "Выкл",
         "err_not_a_number": "Введите целое число",
@@ -156,7 +153,6 @@ TRANSLATIONS = {
         "notif_settings_reset": "Настройки сброшены по умолчанию",
         "settings_file_title": "Файл настроек",
         "settings_open_folder": "Открыть папку",
-        "about_source_title": "Исходный код",
         "settings_nav_general": "Общие",
         "settings_nav_auto": "Автопереключение",
         "settings_nav_modes": "Режимы монитора",
@@ -167,24 +163,17 @@ TRANSLATIONS = {
         "theme_light": "Светлая",
         "theme_system": "Как в системе",
         "err_halo_range": "Halo Control: значение от 0 до 100",
-        "settings_section_general": "Общие",
-        "settings_section_auto": "Автоматическое переключение",
-        "settings_section_modes": "Режимы монитора",
         "settings_exclusions_toggle_desc": "Не считать выбранные программы играми. Пока выключено, список не действует.",
         "settings_brightness_title": "Яркость",
         "settings_dimming_title": "Локальное затемнение",
         "settings_halo_title": "Halo Control",
         "settings_halo_desc": "Регулирует баланс подсветки: низкие значения подавляют ореолы (blooming), высокие — повышают яркость и детализацию мелких объектов.",
-        "settings_halo_value": "Уровень Halo (0–100)",
-        "about_hotkey_title": "Горячая клавиша",
         "about_brightness_part": "яркость {brightness}",
         "about_dimming_part": "локальное затемнение: {dimming}",
         "about_halo_part": "Halo {halo}",
         "about_excluded_custom": "Плюс свои исключения из настроек: {count}.",
         "err_already_running": "Программа уже запущена (значок в области уведомлений).",
-        "settings_hdr_group": "Настройки HDR",
         "settings_advanced_settings": "Дополнительные настройки",
-        "settings_debug_group": "Отладка",
         "settings_debug_enable": "Включить debug (запись лога в файл)",
         "settings_debug_file_label": "Файл лога: {file}",
         "settings_hdr_autoset": "Устанавливать цветовой пресет при нажатии горячей клавиши (если HDR включен)",
@@ -201,12 +190,8 @@ TRANSLATIONS = {
         "btn_save": "Сохранить",
         "btn_cancel": "Отмена",
         "btn_close": "Закрыть",
-        "about_title": "О программе",
         "about_app_title": "Переключение режимов монитора",
-        "about_hotkey": "Горячая клавиша: {hotkey}",
         "about_current_settings": "Текущие настройки (SDR):",
-        "about_standard_line": "• Стандартный: {dimming} ({value}), яркость {brightness}",
-        "about_gaming_line": "• Игровой: {dimming} ({value}), яркость {brightness}",
         "about_excluded_title": "Исключены из определения игр:",
         "about_excluded_list": "Wallpaper Engine, браузеры (Chrome, Firefox, Edge, Brave, Opera, Vivaldi, Яндекс и др.), Проводник, cmd, powershell, notepad, mspaint.",
         "about_version": "Версия: {version}",
@@ -329,7 +314,6 @@ TRANSLATIONS = {
         "settings_exclusions_running_hint": "Programs with visible windows. Select one (double-click or the Add button) – the exact process name of the window will be added.",
         "settings_exclusions_refresh": "Refresh",
         "settings_exclusions_remove": "Remove selected",
-        "settings_exclusions_name_label": "Process name",
         "err_exclusion_invalid": "Enter a process name, e.g. game.exe",
         "err_exclusion_duplicate": "{name} is already excluded",
         "settings_range_1_60": "(1-60)",
@@ -343,8 +327,6 @@ TRANSLATIONS = {
         "settings_notification_win10": "Win 10",
         "settings_notification_win11": "Win 11",
         "settings_notification_off": "Off",
-        "settings_brightness_label": "Brightness (0-100):",
-        "settings_dimming_label": "Local dimming:",
         "toggle_on": "On",
         "toggle_off": "Off",
         "err_not_a_number": "Enter a whole number",
@@ -364,7 +346,6 @@ TRANSLATIONS = {
         "notif_settings_reset": "Settings reset to defaults",
         "settings_file_title": "Settings file",
         "settings_open_folder": "Open folder",
-        "about_source_title": "Source code",
         "settings_nav_general": "General",
         "settings_nav_auto": "Auto-switching",
         "settings_nav_modes": "Monitor modes",
@@ -375,24 +356,17 @@ TRANSLATIONS = {
         "theme_light": "Light",
         "theme_system": "Follow system",
         "err_halo_range": "Halo Control: value from 0 to 100",
-        "settings_section_general": "General",
-        "settings_section_auto": "Automatic switching",
-        "settings_section_modes": "Monitor modes",
         "settings_exclusions_toggle_desc": "Don't treat selected programs as games. While off, the list has no effect.",
         "settings_brightness_title": "Brightness",
         "settings_dimming_title": "Local dimming",
         "settings_halo_title": "Halo Control",
         "settings_halo_desc": "Balances the backlight: low values suppress halos (blooming), high values increase brightness and detail of small objects.",
-        "settings_halo_value": "Halo level (0–100)",
-        "about_hotkey_title": "Hotkey",
         "about_brightness_part": "brightness {brightness}",
         "about_dimming_part": "local dimming: {dimming}",
         "about_halo_part": "Halo {halo}",
         "about_excluded_custom": "Plus your custom exclusions: {count}.",
         "err_already_running": "The program is already running (see the tray icon).",
-        "settings_hdr_group": "HDR settings",
         "settings_advanced_settings": "Advanced settings",
-        "settings_debug_group": "Debug",
         "settings_debug_enable": "Enable debug (write log to file)",
         "settings_debug_file_label": "Log file: {file}",
         "settings_hdr_autoset": "Set color preset on hotkey press (if HDR is enabled)",
@@ -409,12 +383,8 @@ TRANSLATIONS = {
         "btn_save": "Save",
         "btn_cancel": "Cancel",
         "btn_close": "Close",
-        "about_title": "About",
         "about_app_title": "Monitor Mode Switcher",
-        "about_hotkey": "Hotkey: {hotkey}",
         "about_current_settings": "Current settings (SDR):",
-        "about_standard_line": "• Standard: {dimming} ({value}), brightness {brightness}",
-        "about_gaming_line": "• Gaming: {dimming} ({value}), brightness {brightness}",
         "about_excluded_title": "Excluded from game detection:",
         "about_excluded_list": "Wallpaper Engine, browsers (Chrome, Firefox, Edge, Brave, Opera, Vivaldi, Yandex, etc.), Explorer, cmd, powershell, notepad, mspaint.",
         "about_version": "Version: {version}",
@@ -1009,15 +979,16 @@ halo_verified_value = None  # значение Halo, уже сверенное �
 halo_readable = None  # умеет ли монитор отдавать текущий Halo (0x46): None – не проверяли, False – нет
 ui_theme = "dark"  # тема окон: dark (по умолчанию) / light / system
 # Версия программы и репозиторий для проверки обновлений. При выпуске новой версии меняется только APP_VERSION.
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 GITHUB_REPO = "tawiss-cloud/TA-toggle"
 UPDATE_CHECK_INTERVAL = 14 * 24 * 3600  # автоматическая проверка – раз в 14 дней
 auto_update_check = False   # автоматическая проверка обновлений (по умолчанию выключена)
 last_update_check = 0.0     # время последней проверки (unix-секунды)
 update_info = None          # {"version": ..., "url": ...} – найденная новая версия, пока она новее установленной
 legacy_migrated = False     # настройки уже перенесены из папки программы в AppData
+autostart_target = ""       # «программа|аргументы», для которых создан ярлык автозапуска (видно, что exe переименовали или перенесли)
 
-# Последние позиции окон ("settings", "about"): {"x": int, "y": int}; хранятся в настройках.
+# Последние позиции окон ("settings"): {"x": int, "y": int}; хранятся в настройках.
 window_positions = {}
 
 def normalize_process_name(text):
@@ -1132,8 +1103,10 @@ def log(msg):
 
 def get_key_name(vk_code):
     try:
-        scan_code = user32.MapVirtualKeyW(vk_code, 0)
+        scan_code = user32.MapVirtualKeyW(vk_code, 4)   # MAPVK_VK_TO_VSC_EX: у расширенных клавиш старший байт 0xE0
         lparam = (scan_code & 0xFF) << 16
+        if (scan_code >> 8) == 0xE0:
+            lparam |= 1 << 24   # extended-бит: иначе стрелки, Insert/Delete/Home/End/PgUp/PgDn названы как цифровой блок
         buffer = ctypes.create_unicode_buffer(64)
         result = user32.GetKeyNameTextW(lparam, buffer, 64)
         if result > 0 and buffer.value:
@@ -1219,8 +1192,9 @@ def _sanitize_modes(raw):
         mode = dict(default)
         if valid_int(item.get("brightness"), 0, 100):
             mode["brightness"] = item["brightness"]
-        if item.get("local_dimming") in valid_dimming and not isinstance(item.get("local_dimming"), bool):
-            mode["local_dimming"] = item["local_dimming"]
+        dimming = item.get("local_dimming")
+        if isinstance(dimming, int) and not isinstance(dimming, bool) and dimming in valid_dimming:
+            mode["local_dimming"] = dimming
         if valid_int(item.get("halo"), 0, 100):
             mode["halo"] = item["halo"]
         result.append(mode)
@@ -1228,10 +1202,10 @@ def _sanitize_modes(raw):
 
 def load_settings():
     _migrate_legacy_settings()
-    global modes, hdr_settings, auto_switch_enabled, media_players_enabled, media_delay_seconds
+    global modes, auto_switch_enabled, media_players_enabled, media_delay_seconds
     global HOTKEY_MODIFIERS, HOTKEY_VK, current_language, advanced_settings_enabled, debug_enabled
     global notification_style, icon_color_enabled, monitor_device_path, monitor_manual, custom_exclusions_enabled, halo_enabled, ui_theme
-    global auto_update_check, last_update_check, update_info, legacy_migrated
+    global auto_update_check, last_update_check, update_info, legacy_migrated, autostart_target
     language_loaded = False
     modes_loaded = False
     try:
@@ -1286,6 +1260,8 @@ def load_settings():
                 if data.get('ui_theme') in ('dark', 'light', 'system'):
                     ui_theme = data['ui_theme']
                 legacy_migrated = bool(data.get('migrated_from_legacy', False))
+                if isinstance(data.get('autostart_target'), str):
+                    autostart_target = data['autostart_target']
                 auto_update_check = bool(data.get('auto_update_check', False))
                 if isinstance(data.get('last_update_check'), (int, float)):
                     last_update_check = float(data['last_update_check'])
@@ -1296,7 +1272,7 @@ def load_settings():
                 else:
                     update_info = None
                 if isinstance(data.get('window_positions'), dict):
-                    for key in ("settings", "about"):
+                    for key in ("settings",):
                         pos = data['window_positions'].get(key)
                         if (isinstance(pos, dict) and isinstance(pos.get('x'), int)
                                 and isinstance(pos.get('y'), int)):
@@ -1378,6 +1354,7 @@ def _save_settings_unlocked():
             'halo_enabled': halo_enabled,
             'ui_theme': ui_theme,
             'migrated_from_legacy': legacy_migrated,
+            'autostart_target': autostart_target,
             'auto_update_check': auto_update_check,
             'last_update_check': last_update_check,
             'update_info': update_info,
@@ -1399,7 +1376,7 @@ def _save_settings_unlocked():
 
 # ===================== ПРОВЕРКА ОБНОВЛЕНИЙ =====================
 def _parse_version(text):
-    m = re.search(r"\d+(?:\.\d+)*", text or "")
+    m = re.search(r"\d+(?:\.\d+)+", text or "")
     return tuple(int(x) for x in m.group(0).split(".")) if m else None
 
 def _version_newer(candidate, current):
@@ -1602,6 +1579,7 @@ def set_autostart(enabled):
     """Включает/выключает автозапуск. Возвращает (успех, текст_ошибки).
     При включении ярлык всегда пересоздаётся с текущим путём – так автозапуск не указывает на
     старый файл, если программу переименовали или перенесли. Ярлык прежней версии удаляется."""
+    global autostart_target
     try:
         if enabled:
             link_path = _autostart_link_path()
@@ -1611,9 +1589,11 @@ def set_autostart(enabled):
             log(f"Автозапуск включён: {link_path} -> {target} {arguments}".rstrip())
             _delete_reg_value(_STARTUP_APPROVED_KEY, AUTOSTART_LINK_NAME)   # снимаем «отключено в диспетчере задач»
             _remove_autostart_link(LEGACY_AUTOSTART_LINK_NAME)
+            autostart_target = f"{target}|{arguments}"
         else:
             _remove_autostart_link(AUTOSTART_LINK_NAME)
             _remove_autostart_link(LEGACY_AUTOSTART_LINK_NAME)
+            autostart_target = ""
             log("Автозапуск выключен")
         return True, ""
     except Exception as e:
@@ -1630,9 +1610,27 @@ def migrate_legacy_autostart():
         if os.path.exists(_autostart_link_path()) or _startup_approved_disabled(LEGACY_AUTOSTART_LINK_NAME):
             _remove_autostart_link(LEGACY_AUTOSTART_LINK_NAME)
         else:
-            set_autostart(True)
+            if set_autostart(True)[0]:
+                save_settings()
     except Exception as e:
         log(f"Ошибка переноса прежнего автозапуска: {e}")
+
+def refresh_autostart_link():
+    """При запуске: автозапуск включён, но ярлык создан для другого пути (exe переименовали или перенесли) –
+    пересоздаём его, иначе переключатель в настройках показывал бы «Вкл», а программа не стартовала бы.
+    Ярлык, отключённый в диспетчере задач или удалённый вручную, не трогаем (is_autostart_enabled() = False).
+    Пока путь тот же, ярлык не перезаписывается."""
+    try:
+        if not is_autostart_enabled():
+            return
+        target, arguments = _autostart_target()
+        if autostart_target == f"{target}|{arguments}":
+            return
+        log("Автозапуск: путь программы изменился – ярлык пересоздаётся")
+        if set_autostart(True)[0]:
+            save_settings()
+    except Exception as e:
+        log(f"Ошибка обновления ярлыка автозапуска: {e}")
 
 # Индекс монитора в get_monitors() не постоянен: он меняется при подключении или отключении других мониторов,
 # после выхода из сна, сброса драйвера. Поэтому индекс сверяется с сохранённым device path, а если монитор не найден
@@ -1868,7 +1866,7 @@ def update_tray_title(mode_index, process_name=None):
     """Единая точка обновления подсказки трея.
     process_name != None – суффикс с именем процесса (только для игрового
     режима, установленного автоматически). Иначе – просто название режима."""
-    global tray_icon, last_tray_process_name
+    global last_tray_process_name
     last_tray_process_name = process_name
     if not tray_icon:
         return
@@ -2030,7 +2028,7 @@ def find_titan_army_monitor():
     не меньше 14 – подходит любой монитор этой серии). Если привязки ещё не было, берётся первый доступный
     монитор. Если привязка была, а монитор не найден, чужой монитор не выбирается: поиск повторится позже.
     Если монитор выбран вручную (monitor_manual), используется только он: без автоопределения."""
-    global monitor_index
+    global monitor_index, halo_verified_value
     # get_monitors() может бросить исключение при перечислении – перехватываем,
     # иначе упадёт вызывающий код (__main__ или toggle_mode).
     try:
@@ -2094,6 +2092,7 @@ def find_titan_army_monitor():
         log("Подходящий монитор не найден!")
         return False
     monitor_index = found
+    halo_verified_value = None   # монитор мог смениться или выключиться: Halo сверяется заново
     _monitor_check["dirty"], _monitor_check["count"] = False, len(monitors)
     if remember:
         _remember_monitor(found)
@@ -2150,8 +2149,9 @@ def list_monitor_choices(probe=False):
 
 def rebind_monitor_selection():
     """После смены выбора монитора в настройках: индекс определяется заново (вызывать из рабочего потока)."""
-    global monitor_index
+    global monitor_index, halo_readable
     monitor_index = None
+    halo_readable = None   # у другого монитора чтение Halo может работать иначе
     _monitor_check["dirty"] = True
     _monitor_check["redetect"] = 0.0
     _monitor_check["missing_logged"] = False
@@ -2728,8 +2728,8 @@ def delayed_media_switch(hwnd):
             last_reported_state = True
 
 def monitor_loop():
-    global current_mode_index, stop_hotkey_thread, game_counter, game_window_hwnd
-    global auto_switch_enabled, media_timer, media_delay_seconds, last_reported_state
+    global game_counter, game_window_hwnd
+    global media_timer, last_reported_state
     global manual_override_active, manual_override_waiting
     global confirmed_hdr_active, hdr_confirmed_for_hwnd, game_switch_attempt_logged, game_switch_attempt_hwnd
     global standard_return_attempt_logged, standard_return_blocked_logged, standard_return_last_attempt_time
@@ -2777,8 +2777,12 @@ def monitor_loop():
                         reset_confirmed_hdr()
                         game_switch_attempt_logged = False
                         game_switch_attempt_hwnd = None
-                        if current_mode_index != 0:
-                            apply_mode_by_index(0)
+                        if current_mode_index != 0 and not apply_mode_by_index(0):
+                            # Не удалось (HDR ещё включён, DDC/CI не ответил): повтор сделает обычная ветка по долгу.
+                            standard_restore_pending = True
+                            standard_return_attempt_logged = False
+                            standard_return_blocked_logged = False
+                            standard_return_last_attempt_time = 0.0
                         game_state_lock.release()
                         lock_held = False
                         time.sleep(1)
@@ -2938,9 +2942,9 @@ def monitor_loop():
         time.sleep(1)
 
 def toggle_mode(icon=None):
-    global current_mode_index, last_switch_time, last_reported_state
+    global last_switch_time, last_reported_state
     global manual_override_active, manual_override_waiting
-    global game_window_hwnd, game_counter, confirmed_hdr_active, hdr_confirmed_for_hwnd
+    global game_window_hwnd, confirmed_hdr_active, hdr_confirmed_for_hwnd
     global standard_return_attempt_logged, standard_return_blocked_logged, standard_return_last_attempt_time
     global standard_restore_pending, last_session_media, last_media_player_logged
 
@@ -3756,6 +3760,14 @@ def collect_system_info():
     return [("Version", APP_VERSION), ("Windows build", _WIN_BUILD or "?"), ("Language", current_language),
             ("Mode", mode_name), ("Debug", "on" if is_debug_active() else "off"), ("Run", run)]
 
+def _redact_log_text(text):
+    """Журнал уходит в публичный Issue: убираем из него имя пользователя Windows (оно есть в путях)
+    и уникальную часть device path монитора (идентификатор производителя и модели остаётся)."""
+    home = os.path.expanduser("~")
+    if home and home != "~" and len(home) > 3:
+        text = re.sub(re.escape(home), "~", text, flags=re.IGNORECASE)
+    return re.sub(r"(DISPLAY#[^#\s]+#)[^#\s]+(#)", r"\1***\2", text)
+
 def collect_recent_log():
     """(текст, число строк): начало журнала (запуск программы) и последние записи."""
     lines = list(_log_head)
@@ -3764,7 +3776,7 @@ def collect_recent_log():
     if skipped:
         lines.append(f"... {skipped} lines skipped ...")
     lines += tail
-    text = "\n".join(lines)
+    text = _redact_log_text("\n".join(lines))
     if len(text) > REPORT_LOG_MAX_CHARS:
         text = "...\n" + text[-REPORT_LOG_MAX_CHARS:]
     return text, len(lines)
@@ -4127,7 +4139,6 @@ def create_settings_window(start_page="general"):
 
         # ---------- действия ----------
         def save_all_settings():
-            nonlocal new_hotkey_mod, new_hotkey_vk
             try:
                 standard_brightness = int(standard_brightness_var.get())
                 gaming_brightness = int(gaming_brightness_var.get())
@@ -4161,7 +4172,7 @@ def create_settings_window(start_page="general"):
                     if delay_val > 60:
                         raise ValueError(t("err_delay_max"))
                 except ValueError as e:
-                    show_notification(t("notif_delay_field_error", error=e))
+                    show_notification(t("notif_delay_field_error", error=e), error=True)
                     return
 
                 global auto_switch_enabled, media_players_enabled, media_delay_seconds
@@ -4276,25 +4287,14 @@ def create_settings_window(start_page="general"):
                 if newly_added_exclusions:
                     check_active_game_exclusion(newly_added_exclusions)
 
-                if auto_switch_enabled:
-                    def check_now():
-                        hwnd = user32.GetForegroundWindow()
-                        if not hwnd:
-                            return
-                        # is_game_window модифицирует глобальные last_excluded_process_logged /
-                        # last_media_player_logged – держим game_state_lock, чтобы не гонять с monitor_loop.
-                        with game_state_lock:
-                            if is_game_window(hwnd):
-                                log("Авто-переключение включено – игра/медиаплеер активна, переключаем")
-                                apply_mode_by_index(1, force_hdr_check=True, hwnd=hwnd)
-                    threading.Thread(target=check_now, daemon=True).start()
+                # Игру, которая станет активной после закрытия окна настроек, подхватит monitor_loop.
 
                 remember_window_position("settings", window)
                 window.destroy()
             except ValueError as e:
-                show_notification(t("notif_error", error=str(e)))
+                show_notification(t("notif_error", error=str(e)), error=True)
             except Exception as e:
-                show_notification(t("notif_save_error", error=e))
+                show_notification(t("notif_save_error", error=e), error=True)
 
         def on_cancel():
             remember_window_position("settings", window)
@@ -4482,6 +4482,7 @@ def create_settings_window(start_page="general"):
 
         def finish_recording():
             hotkey_frame.unbind("<KeyPress>")
+            hotkey_frame.unbind("<KeyRelease>")
             hotkey_frame.unbind("<FocusOut>")
             record_button.set_text(t("settings_hotkey_record"))
             hotkey_hint_var.set(t("settings_hotkey_hint"))
@@ -4519,12 +4520,21 @@ def create_settings_window(start_page="general"):
                 finish_recording()
             return "break"
 
+        def on_hotkey_key_release(event):
+            # Отпущенный модификатор уже не удерживается: иначе нажатый и отпущенный раньше Ctrl попал бы в сочетание.
+            kind = {"Control_L": "ctrl", "Control_R": "ctrl", "Alt_L": "alt", "Alt_R": "alt",
+                    "Shift_L": "shift", "Shift_R": "shift"}.get(event.keysym)
+            if kind:
+                recording_modifiers.discard(kind)
+            return "break"
+
         def start_recording():
             recording_modifiers.clear()
             hotkey_hint_var.set(t("settings_hotkey_press_combo"))
             record_button.set_text(t("settings_hotkey_cancel_record"))
             hotkey_frame.focus_set()
             hotkey_frame.bind("<KeyPress>", on_hotkey_key_press)
+            hotkey_frame.bind("<KeyRelease>", on_hotkey_key_release)
             hotkey_frame.bind("<FocusOut>", lambda e: (finish_recording(),
                               hotkey_display_var.set(hotkey_to_string(new_hotkey_mod, new_hotkey_vk))))
 
@@ -4678,10 +4688,10 @@ def create_settings_window(start_page="general"):
         def add_exclusion(name=None):
             normalized = normalize_process_name(exclusion_entry_var.get() if name is None else name)
             if not normalized:
-                show_notification(t("err_exclusion_invalid"))
+                show_notification(t("err_exclusion_invalid"), error=True)
                 return
             if normalized in custom_excluded_local or normalized in [p.lower() for p in EXCLUDED_PROCESSES]:
-                show_notification(t("err_exclusion_duplicate", name=normalized))
+                show_notification(t("err_exclusion_duplicate", name=normalized), error=True)
                 return
             custom_excluded_local.append(normalized)
             exclusions_listbox.insert(tk.END, normalized)
@@ -4893,7 +4903,8 @@ def create_settings_window(start_page="general"):
                 tk_queue.put(("window", lambda: fill_monitor_choices(choices)))
             threading.Thread(target=worker, daemon=True).start()
 
-        monitor_refresh = W11Icon(monitor_row.right, pal, "refresh", command=lambda: load_monitor_choices(True))
+        monitor_refresh = W11Icon(monitor_row.right, pal, "refresh", bg=pal["card"],
+                                  command=lambda: load_monitor_choices(True))
         monitor_refresh.pack(side="left", padx=(8, 0))
         load_monitor_choices()
         page.gap(14)
@@ -5126,7 +5137,6 @@ def set_hdr_color_preset():
         log(f"Ошибка: {e}")
 
 def rebuild_tray_menu():
-    global tray_icon
     if tray_icon:
         try:
             tray_icon.menu = Menu(
@@ -5163,7 +5173,7 @@ def on_quit(icon, item):
     icon.stop()
 
 def hotkey_listener(icon):
-    global hotkey_thread_id, stop_hotkey_thread, HOTKEY_MODIFIERS, HOTKEY_VK
+    global hotkey_thread_id, HOTKEY_MODIFIERS, HOTKEY_VK
     msg = ctypes.wintypes.MSG()
     # Очередь сообщений потока создаём сразу: иначе PostThreadMessageW, пришедший до первого GetMessageW, не дойдёт.
     user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
@@ -5277,6 +5287,7 @@ if __name__ == "__main__":
     if not acquire_single_instance():
         sys.exit(0)
     migrate_legacy_autostart()
+    refresh_autostart_link()
     print(t("console_start"))
     print(t("console_standard", dimming=modes[0]['local_dimming'], brightness=modes[0]['brightness']))
     print(t("console_gaming", dimming=modes[1]['local_dimming'], brightness=modes[1]['brightness']))
